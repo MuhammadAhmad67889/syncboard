@@ -88,8 +88,9 @@ function seedNotes(doc: Y.Doc): void {
 // Updates a Y.Text to match the textarea, changing only the part
 // that actually differs. A whole-string replace would delete text
 // another user typed at the same time; a prefix/suffix diff keeps
-// both people's typing.
-function updateNoteText(doc: Y.Doc, text: Y.Text, next: string): void {
+// both people's typing. The change runs under `origin` so the
+// local UndoManager can track it (and only it).
+function updateNoteText(doc: Y.Doc, text: Y.Text, next: string, origin: unknown): void {
   const current = text.toString();
   if (current === next) return;
   let start = 0;
@@ -109,7 +110,7 @@ function updateNoteText(doc: Y.Doc, text: Y.Text, next: string): void {
   doc.transact(() => {
     if (endCurrent > start) text.delete(start, endCurrent - start);
     if (endNext > start) text.insert(start, next.slice(start, endNext));
-  });
+  }, origin);
 }
 
 // Reads a cursor out of an Awareness state. Anything malformed
@@ -228,6 +229,17 @@ function Board({
   const [presence, setPresence] = useState<PresenceUser[]>([]);
   // The note this user clicked. null means nothing selected.
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  // The color new notes get, and the color the picker shows as
+  // active. Picking a color also recolors the selected note.
+  const [pickedColor, setPickedColor] = useState<NoteColor>("yellow");
+  // Whether the local UndoManager has anything to undo or redo.
+  // Updated whenever the undo stack changes.
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  // The origin stamped on every local change. The UndoManager
+  // only tracks this origin, so undo never reverts another
+  // user's edits — their changes arrive with a different origin.
+  const localOrigin = `local-user-${user.id}`;
   const docRef = useRef<Y.Doc | null>(null);
   const notesMapRef = useRef<Y.Map<NoteMap> | null>(null);
   // The provider's Awareness instance (null only if the provider
@@ -254,6 +266,19 @@ function Board({
     noteX: number;
     noteY: number;
   } | null>(null);
+  // The resize in progress, if any — same shape as the drag.
+  const resizeRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    noteW: number;
+    noteH: number;
+  } | null>(null);
+  // The per-user UndoManager: it tracks only changes stamped
+  // with localOrigin, on the shared notes map and its children
+  // (nested note maps and their Y.Text).
+  const undoManagerRef = useRef<Y.UndoManager | null>(null);
 
   useEffect(() => {
     const doc = new Y.Doc();
@@ -280,6 +305,23 @@ function Board({
     const notesMap = doc.getMap<NoteMap>("notes");
     docRef.current = doc;
     notesMapRef.current = notesMap;
+
+    // Per-user undo: the manager only tracks transactions stamped
+    // with our own origin, so another user's edits never land on
+    // our undo stack. Drags and typing batch into one step while
+    // they keep coming within the capture timeout (500 ms).
+    const undoManager = new Y.UndoManager(notesMap, {
+      trackedOrigins: new Set([localOrigin]),
+    });
+    undoManagerRef.current = undoManager;
+    function refreshUndoState(): void {
+      setCanUndo(undoManager.canUndo());
+      setCanRedo(undoManager.canRedo());
+    }
+    undoManager.on("stack-item-added", refreshUndoState);
+    undoManager.on("stack-item-popped", refreshUndoState);
+    undoManager.on("stack-cleared", refreshUndoState);
+    refreshUndoState();
 
     // Re-reads every note from the shared document into React
     // state. observeDeep fires for note moves, resizes, color
@@ -323,6 +365,11 @@ function Board({
     refreshPresence();
 
     return () => {
+      undoManager.off("stack-item-added", refreshUndoState);
+      undoManager.off("stack-item-popped", refreshUndoState);
+      undoManager.off("stack-cleared", refreshUndoState);
+      undoManager.destroy();
+      undoManagerRef.current = null;
       awareness?.off("change", refreshPresence);
       awarenessRef.current = null;
       notesMap.unobserveDeep(snapshot);
@@ -357,14 +404,22 @@ function Board({
     if (!noteMap) return;
     const nextX = Math.max(0, drag.noteX + event.clientX - drag.startX);
     const nextY = Math.max(0, drag.noteY + event.clientY - drag.startY);
+    // Stamped with our origin so undo can revert this move — and
+    // only this user's moves. Pointermove fires faster than the
+    // capture timeout, so the whole drag lands on one undo step.
     doc.transact(() => {
       noteMap.set("x", Math.round(nextX));
       noteMap.set("y", Math.round(nextY));
-    });
+    }, localOrigin);
   }
 
   function endDrag(event: React.PointerEvent<HTMLDivElement>): void {
-    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+      // The next change starts a fresh undo step instead of
+      // joining the drag we just finished.
+      undoManagerRef.current?.stopCapturing();
+    }
   }
 
   // Publishes the local user's current presence (cursor +
@@ -397,20 +452,24 @@ function Board({
     publishPresence();
   }
 
+  // Sets the selection in state and in Awareness at once, so
+  // the outline, the presence bar, and other users stay in sync.
+  function setSelection(noteId: string | null): void {
+    setSelectedNoteId(noteId);
+    localPresenceRef.current.selectedNoteIds = noteId ? [noteId] : [];
+    publishPresence();
+  }
+
   // Clicking a note selects it, and tells everyone else.
   function selectNote(noteId: string): void {
     if (selectedNoteId === noteId) return;
-    setSelectedNoteId(noteId);
-    localPresenceRef.current.selectedNoteIds = [noteId];
-    publishPresence();
+    setSelection(noteId);
   }
 
   // Clicking empty board clears the selection.
   function clearSelection(): void {
     if (localPresenceRef.current.selectedNoteIds.length === 0) return;
-    setSelectedNoteId(null);
-    localPresenceRef.current.selectedNoteIds = [];
-    publishPresence();
+    setSelection(null);
   }
 
   function changeNoteText(noteId: string, next: string): void {
@@ -420,8 +479,183 @@ function Board({
     const noteMap = notesMap.get(noteId);
     const text = noteMap?.get("text");
     if (!noteMap || !(text instanceof Y.Text)) return;
-    updateNoteText(doc, text, next);
+    updateNoteText(doc, text, next, localOrigin);
   }
+
+  // Creates a note at the given board position, in the picked
+  // color, and selects it so the user can type or recolor it
+  // right away. The new note is empty — the user types into it.
+  function createNote(x: number, y: number): void {
+    const doc = docRef.current;
+    const notesMap = notesMapRef.current;
+    if (!doc || !notesMap) return;
+    const id = crypto.randomUUID();
+    doc.transact(() => {
+      const note = new Y.Map<unknown>();
+      note.set("x", Math.round(x));
+      note.set("y", Math.round(y));
+      note.set("w", DEFAULT_NOTE_SIZE.w);
+      note.set("h", DEFAULT_NOTE_SIZE.h);
+      note.set("color", pickedColor);
+      note.set("text", new Y.Text(""));
+      notesMap.set(id, note);
+    }, localOrigin);
+    selectNote(id);
+  }
+
+  // Creates a note in the middle of the visible board.
+  function createNoteAtCenter(): void {
+    const board = boardRef.current;
+    if (!board) return;
+    const rect = board.getBoundingClientRect();
+    createNote(
+      Math.max(0, rect.width / 2 - DEFAULT_NOTE_SIZE.w / 2),
+      Math.max(0, rect.height / 2 - DEFAULT_NOTE_SIZE.h / 2),
+    );
+  }
+
+  // Double-clicking empty canvas creates a note centered on the
+  // click. A double-click on a note does nothing — its target is
+  // the note, not the board.
+  function createNoteAtPoint(event: React.MouseEvent<HTMLDivElement>): void {
+    if (event.target !== event.currentTarget) return;
+    const board = boardRef.current;
+    if (!board) return;
+    const rect = board.getBoundingClientRect();
+    createNote(
+      Math.max(0, event.clientX - rect.left - DEFAULT_NOTE_SIZE.w / 2),
+      Math.max(0, event.clientY - rect.top - DEFAULT_NOTE_SIZE.h / 2),
+    );
+  }
+
+  // Recolors one note. The change syncs to every tab like any
+  // other edit, and undo reverts it.
+  function recolorNote(noteId: string, color: NoteColor): void {
+    const doc = docRef.current;
+    const notesMap = notesMapRef.current;
+    if (!doc || !notesMap) return;
+    const noteMap = notesMap.get(noteId);
+    if (!noteMap) return;
+    doc.transact(() => {
+      noteMap.set("color", color);
+    }, localOrigin);
+  }
+
+  // Picks the color for new notes — and recolors the selected
+  // note right away, if there is one.
+  function pickColor(color: NoteColor): void {
+    setPickedColor(color);
+    if (selectedNoteId) recolorNote(selectedNoteId, color);
+  }
+
+  // Removes a note from the shared map, so it disappears in every
+  // tab. If it was the selected note, the selection clears too.
+  function deleteNote(noteId: string): void {
+    const doc = docRef.current;
+    const notesMap = notesMapRef.current;
+    if (!doc || !notesMap || !notesMap.has(noteId)) return;
+    doc.transact(() => {
+      notesMap.delete(noteId);
+    }, localOrigin);
+    if (localPresenceRef.current.selectedNoteIds.includes(noteId)) {
+      setSelection(null);
+    }
+  }
+
+  // The smallest a note can be resized to — smaller than this,
+  // the text is unreadable.
+  const MIN_NOTE_SIZE = 120;
+
+  // Starts a resize from the note's bottom-right handle.
+  function startResize(event: React.PointerEvent<HTMLDivElement>, note: Note): void {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRef.current = {
+      id: note.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      noteW: note.w,
+      noteH: note.h,
+    };
+  }
+
+  function moveResize(event: React.PointerEvent<HTMLDivElement>): void {
+    const resize = resizeRef.current;
+    const doc = docRef.current;
+    const notesMap = notesMapRef.current;
+    if (!resize || !doc || !notesMap || event.pointerId !== resize.pointerId) return;
+    const noteMap = notesMap.get(resize.id);
+    if (!noteMap) return;
+    const nextW = Math.max(MIN_NOTE_SIZE, resize.noteW + event.clientX - resize.startX);
+    const nextH = Math.max(MIN_NOTE_SIZE, resize.noteH + event.clientY - resize.startY);
+    // Same batching as a drag: rapid moves merge into one undo step.
+    doc.transact(() => {
+      noteMap.set("w", Math.round(nextW));
+      noteMap.set("h", Math.round(nextH));
+    }, localOrigin);
+  }
+
+  function endResize(event: React.PointerEvent<HTMLDivElement>): void {
+    if (resizeRef.current?.pointerId === event.pointerId) {
+      resizeRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Reverts the last local change only. Remote edits are not on
+  // this stack (they arrive with a different origin), so undo
+  // never touches another user's work.
+  function undo(): void {
+    const manager = undoManagerRef.current;
+    if (!manager || !manager.canUndo()) return;
+    manager.undo();
+  }
+
+  function redo(): void {
+    const manager = undoManagerRef.current;
+    if (!manager || !manager.canRedo()) return;
+    manager.redo();
+  }
+
+  // Keyboard shortcuts: Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo,
+  // Delete / Backspace deletes the selected note. Delete only
+  // fires when the user is not typing in a note's textarea.
+  // Ctrl+Z is caught even while typing: the textarea is controlled
+  // by the shared document, so the browser's native text undo
+  // would fight React — the UndoManager is the one that works.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      const target = event.target as HTMLElement | null;
+      const editingText =
+        target !== null &&
+        (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
+      const mod = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (mod && !event.shiftKey && key === "z") {
+        event.preventDefault();
+        undo();
+        return;
+      }
+      if (mod && (key === "y" || (event.shiftKey && key === "z"))) {
+        event.preventDefault();
+        redo();
+        return;
+      }
+      if (!editingText && (event.key === "Delete" || event.key === "Backspace")) {
+        const selectedId = localPresenceRef.current.selectedNoteIds[0];
+        if (selectedId) {
+          event.preventDefault();
+          deleteNote(selectedId);
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // The handlers only touch refs and state setters, so binding
+    // once is safe — the selection is read from the presence ref,
+    // not from state, so it is never stale.
+  }, []);
 
   // Who selected each note, local user included, so the outline
   // and label can show every selector at once.
@@ -471,6 +705,44 @@ function Board({
           <PresenceChip key={person.id} person={person} />
         ))}
       </div>
+      <div className="toolbar" aria-label="Board tools">
+        <button type="button" className="toolbar-button" onClick={createNoteAtCenter}>
+          + Note
+        </button>
+        <span className="toolbar-divider" aria-hidden="true" />
+        <div className="color-picker" role="group" aria-label="Note color">
+          {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
+            <button
+              key={color}
+              type="button"
+              className={`color-dot${color === pickedColor ? " active" : ""}`}
+              style={{ background: NOTE_COLORS[color] }}
+              onClick={() => pickColor(color)}
+              aria-label={`${color} note`}
+              aria-pressed={color === pickedColor}
+            />
+          ))}
+        </div>
+        <span className="toolbar-divider" aria-hidden="true" />
+        <button
+          type="button"
+          className="toolbar-button"
+          onClick={undo}
+          disabled={!canUndo}
+          title="Undo (Ctrl+Z)"
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          className="toolbar-button"
+          onClick={redo}
+          disabled={!canRedo}
+          title="Redo (Ctrl+Shift+Z)"
+        >
+          Redo
+        </button>
+      </div>
       <div
         className="board"
         ref={boardRef}
@@ -480,6 +752,7 @@ function Board({
           // A click on empty board (not on a note) clears the selection.
           if (event.target === event.currentTarget) clearSelection();
         }}
+        onDoubleClick={createNoteAtPoint}
       >
         {notes.map((note) => {
           const selectors = selectorsByNote.get(note.id) ?? [];
@@ -523,8 +796,30 @@ function Board({
                 className="note-text"
                 value={note.text}
                 onChange={(event) => changeNoteText(note.id, event.target.value)}
+                onBlur={() => undoManagerRef.current?.stopCapturing()}
+                placeholder="New note"
                 aria-label="Note text"
               />
+              {selectedNoteId === note.id && (
+                <>
+                  <button
+                    type="button"
+                    className="note-delete"
+                    onClick={() => deleteNote(note.id)}
+                    aria-label="Delete note"
+                    title="Delete note (Delete key)"
+                  >
+                    ×
+                  </button>
+                  <div
+                    className="note-resize"
+                    onPointerDown={(event) => startResize(event, note)}
+                    onPointerMove={moveResize}
+                    onPointerUp={endResize}
+                    aria-label="Resize note"
+                  />
+                </>
+              )}
             </div>
           );
         })}
