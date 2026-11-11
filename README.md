@@ -64,8 +64,6 @@ Other useful commands: `npm run build`, `npm run typecheck`,
   `GET /token?user=<id>` (dev only, no real accounts yet). Open
   the board in two tabs as two different users: editing a note's
   text or dragging it in one tab shows up live in the other.
-  Pan and zoom are per user and land in Phase 5; for now the
-  board is one fixed view.
 - **Phase 2 — Presence (done):** Awareness-driven cursors, user
   list, presence dots, selection highlighting.
 - **Phase 3 — Editing UX (done):** double-click empty canvas (or
@@ -89,8 +87,26 @@ Other useful commands: `npm run build`, `npm run typecheck`,
   its local document and Yjs syncs the difference when it comes
   back. To reset the board, stop the server and delete
   `data/syncboard.db`.
-- **Phase 5 — Polish + demo:** toolbar, zoom controls, shareable
-  demo, a documented two-user test, final README.
+- **Phase 5 — Polish + demo (done):** toolbar zoom controls
+  (− / % / + / Reset, 25–300%, centered on the visible board)
+  and pan by dragging empty canvas. Both are per-user view state
+  — they are never synced and never saved, so one person's zoom
+  never moves another person's view, and cursors still land on
+  the right note at any zoom. A step-by-step 2-user demo is in
+  [docs/demo-script.md](docs/demo-script.md), and the documented
+  acceptance test (two clients, same-note convergence, undo
+  isolation, restart survival, fresh joiner) is in
+  [docs/demo-test.md](docs/demo-test.md) — all checks passed.
+
+## Demo
+
+<!-- The shareable Replit demo link goes here once it is set up. -->
+
+Try it with two browser windows side by side: sign in as Ahmad in
+one and Sara in the other, and follow
+[docs/demo-script.md](docs/demo-script.md). The documented
+two-user acceptance test is in
+[docs/demo-test.md](docs/demo-test.md).
 
 ## License
 
