@@ -16,6 +16,10 @@ presence, and shared sticky notes that converge without conflicts.
   typing overwrites anyone else's.
 - **Sync server:** Hocuspocus (Node + TypeScript) relays Yjs updates
   between clients over WebSockets and verifies a JWT in the handshake.
+  The client must be `@hocuspocus/provider`, not plain y-websocket:
+  Hocuspocus prefixes every message with the document name, so a
+  plain y-websocket client's first message bytes get misread as a
+  garbage document name.
 - **Presence:** the Yjs Awareness protocol shares live cursors, names,
   colors, and selections. They are ephemeral — they vanish when a
   user disconnects.
@@ -52,11 +56,16 @@ Other useful commands: `npm run build`, `npm run typecheck`,
 ## Phases
 
 - **Phase 0 — Setup (done):** monorepo, sync server skeleton,
-  shared data model, placeholder web app. This page is all there is
-  so far.
-- **Phase 1 — Real-time core:** Yjs document, Hocuspocus server,
-  React canvas rendering notes from the shared map; two browser
-  tabs sync text, position, and color live.
+  shared data model, placeholder web app.
+- **Phase 1 — Real-time core (done):** Yjs document, Hocuspocus
+  server with JWT auth in the handshake, React canvas rendering
+  notes from the shared map. Pick a demo user (Ahmad, Sara, or
+  Omar) to sign in — the server issues a token for them at
+  `GET /token?user=<id>` (dev only, no real accounts yet). Open
+  the board in two tabs as two different users: editing a note's
+  text or dragging it in one tab shows up live in the other.
+  Pan and zoom are per user and land in Phase 5; for now the
+  board is one fixed view.
 - **Phase 2 — Presence:** Awareness-driven cursors, user list,
   presence dots, selection highlighting.
 - **Phase 3 — Editing UX:** create, drag, resize, and delete notes,
