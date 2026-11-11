@@ -1,28 +1,189 @@
-/* Minimal Phase 0 styles. The real design system lands with the canvas. */
+/* Phase 1 styles: sign-in picker, board header, sticky notes.
+   Pan/zoom and the toolbar land in later phases. */
 :root {
   color-scheme: light dark;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #0f172a;
+  background: #f6f7f9;
 }
 
 body {
   margin: 0;
 }
 
-.app {
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* --- Sign-in picker --- */
+.picker {
   display: grid;
-  gap: 8px;
+  gap: 16px;
   place-content: center;
   min-height: 100vh;
   padding: 24px;
   text-align: center;
 }
 
-.app h1 {
+.picker h1 {
   margin: 0;
   font-size: 2.5rem;
 }
 
-.app p {
+.picker p {
   margin: 0;
-  color: #666;
+  color: #64748b;
+}
+
+.picker-users {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.picker-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border: 1px solid #e6e8ec;
+  border-radius: 12px;
+  background: #fff;
+  color: #0f172a;
+}
+
+.picker-user:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.picker-error {
+  color: #dc2626;
+}
+
+.picker-hint {
+  max-width: 420px;
+  font-size: 0.9rem;
+}
+
+/* --- Board --- */
+.board-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.board-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e6e8ec;
+  background: #fff;
+}
+
+.board-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-weight: 600;
+}
+
+.user-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.status {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.status-connected {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+.status-connecting {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.status-disconnected {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.auth-error {
+  color: #b91c1c;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.sign-out {
+  padding: 6px 12px;
+  border: 1px solid #e6e8ec;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+}
+
+.board {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+}
+
+.board-empty {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #64748b;
+}
+
+/* --- Sticky notes --- */
+.note {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 0.15);
+}
+
+/* The top strip is the drag handle — grabbing it moves the note. */
+.note-handle {
+  height: 24px;
+  flex: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.note-handle:active {
+  cursor: grabbing;
+}
+
+.note-text {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 12px 12px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: #0f172a;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.4;
 }
