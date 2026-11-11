@@ -3,8 +3,15 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import jwt from "jsonwebtoken";
+import * as Y from "yjs";
 import { Server } from "@hocuspocus/server";
-import { DEMO_USERS, type DemoUser } from "@syncboard/shared";
+import {
+  DEFAULT_NOTE_SIZE,
+  DEMO_USERS,
+  SEED_NOTES,
+  type DemoUser,
+} from "@syncboard/shared";
+import { createBoardStore, resolveDatabasePath } from "./persistence.js";
 
 // dotenv only reads .env from the working directory, but `npm run
 // dev` runs this server from apps/sync-server while the .env lives
@@ -45,6 +52,33 @@ if (jwtSecret === "change-me-in-production") {
   console.warn(
     "[warn] JWT_SECRET is still the example value. Change it before any shared deployment.",
   );
+}
+
+// The board store lives in SQLite. The path comes from
+// DATABASE_URL (file:./data/syncboard.db by default, relative to
+// the repo root). The database file is gitignored — deleting it
+// resets every board to the starter notes.
+const dbPath = resolveDatabasePath(process.env.DATABASE_URL);
+const boardStore = createBoardStore(dbPath);
+console.log(`[persist] board state in ${dbPath}`);
+
+// Fills a fresh document with the starter notes. Only called
+// from onLoadDocument, when the board has no saved state at all.
+function seedBoard(document: Y.Doc): void {
+  document.transact(() => {
+    const notes = document.getMap<Y.Map<unknown>>("notes");
+    for (const seed of SEED_NOTES) {
+      if (notes.has(seed.id)) continue;
+      const note = new Y.Map<unknown>();
+      note.set("x", seed.x);
+      note.set("y", seed.y);
+      note.set("w", DEFAULT_NOTE_SIZE.w);
+      note.set("h", DEFAULT_NOTE_SIZE.h);
+      note.set("color", seed.color);
+      note.set("text", new Y.Text(seed.text));
+      notes.set(seed.id, note);
+    }
+  });
 }
 
 // Signs a short-lived token for one of the hardcoded demo users.
@@ -121,10 +155,13 @@ function handleTokenRequest(request: IncomingMessage, response: ServerResponse):
   return true;
 }
 
-// Phase 1: JWT auth in the handshake, documents in memory only.
-// Persistence (Phase 4) is not wired up yet — documents are lost
-// when the server restarts, and Phase 4 adds debounced binary
-// writes to SQLite.
+// Phase 4: persistence. The server loads each board's saved
+// state from SQLite in onLoadDocument and writes it back in
+// onStoreDocument, which Hocuspocus calls debounced (2 s after
+// the last change) so a drag writes once instead of once per
+// pointermove. A board with no saved state is brand new and gets
+// the starter notes here, on the server — clients never seed, so
+// a board whose notes were all deleted can never re-seed.
 //
 // Auth flow: the client sends its token in an Auth message right
 // after connecting, and onAuthenticate verifies it. A plain
@@ -133,6 +170,31 @@ function handleTokenRequest(request: IncomingMessage, response: ServerResponse):
 // must be @hocuspocus/provider (see apps/web).
 const server = Server.configure({
   port,
+  // Debounces onStoreDocument: 2 s after the last change, and
+  // at least every 10 s (maxDebounce) while changes keep coming.
+  debounce: 2000,
+
+  async onLoadDocument({ document, documentName }) {
+    const saved = boardStore.load(documentName);
+    if (saved) {
+      // A saved state exists, so this board is not new — even
+      // when the saved notes map is empty (the user deleted every
+      // note). Applying it here makes the server the source of
+      // truth for "this board already has state".
+      Y.applyUpdate(document, saved);
+      console.log(`[persist] loaded "${documentName}" (${saved.length} bytes)`);
+      return;
+    }
+    if (document.getMap("notes").size === 0) seedBoard(document);
+    // Save right away, so a restart before the first edit still
+    // comes back seeded.
+    boardStore.save(documentName, Y.encodeStateAsUpdate(document));
+    console.log(`[persist] seeded new board "${documentName}"`);
+  },
+
+  async onStoreDocument({ document, documentName }) {
+    boardStore.save(documentName, Y.encodeStateAsUpdate(document));
+  },
 
   async onAuthenticate({ token, documentName }) {
     const user = verifyToken(token);
