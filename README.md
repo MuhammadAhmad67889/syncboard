@@ -66,10 +66,17 @@ Other useful commands: `npm run build`, `npm run typecheck`,
   text or dragging it in one tab shows up live in the other.
   Pan and zoom are per user and land in Phase 5; for now the
   board is one fixed view.
-- **Phase 2 — Presence:** Awareness-driven cursors, user list,
-  presence dots, selection highlighting.
-- **Phase 3 — Editing UX:** create, drag, resize, and delete notes,
-  color picker, inline text editing, per-user undo/redo.
+- **Phase 2 — Presence (done):** Awareness-driven cursors, user
+  list, presence dots, selection highlighting.
+- **Phase 3 — Editing UX (done):** double-click empty canvas (or
+  the + Note button) creates a note; color picker in the toolbar
+  sets the color for new notes and recolors the selected one; the
+  selected note has a resize handle and a delete button, and the
+  Delete key deletes it too. Per-user undo/redo: every local
+  change runs under the origin `local-user-<id>`, and the
+  UndoManager only tracks that origin, so your Ctrl+Z never
+  reverts another user's edits. Drags and typing batch into one
+  undo step.
 - **Phase 4 — Persistence + reconnect:** debounced binary
   persistence to SQLite, reload restores the board, offline edits
   merge on reconnect.
