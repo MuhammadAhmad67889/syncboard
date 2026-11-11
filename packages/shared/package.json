@@ -1,0 +1,1 @@
+{"devDependencies":{"typescript":"^5.7.0"},"exports":{".":{"default":"./dist/index.js","types":"./dist/index.d.ts"}},"main":"./dist/index.js","name":"@syncboard/shared","private":true,"scripts":{"build":"tsc","lint":"echo \"no linter configured yet\"","test":"echo \"no tests yet\"","typecheck":"tsc --noEmit"},"type":"module","types":"./dist/index.d.ts","version":"0.1.0"}
