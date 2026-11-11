@@ -21,15 +21,6 @@ const SYNC_URL = import.meta.env.VITE_SYNC_URL ?? "ws://localhost:1234";
 // numbers (x, y, w, h), a color name, and a Y.Text for the text.
 type NoteMap = Y.Map<unknown>;
 
-// The three starter notes, seeded when a board is first opened.
-// The ids are fixed, so two tabs seeding at the same time still
-// end up with exactly one copy of each note.
-const SEED_NOTES: Array<{ id: string; x: number; y: number; color: NoteColor; text: string }> = [
-  { id: "seed-1", x: 80, y: 120, color: "yellow", text: "Ship Phase 1\nby Friday" },
-  { id: "seed-2", x: 380, y: 220, color: "pink", text: "Ask Sara to\nreview the API" },
-  { id: "seed-3", x: 700, y: 120, color: "green", text: "Demo on\nMonday 10am" },
-];
-
 // Throttle: about 30 cursor updates per second. Pointermove
 // fires far more often than that, and every update is a message
 // to the server.
@@ -63,26 +54,6 @@ function readNote(id: string, noteMap: NoteMap): Note {
     color: asNoteColor(noteMap.get("color")),
     text: text instanceof Y.Text ? text.toString() : "",
   };
-}
-
-// Seeds the starter notes, but only the ones that are not already
-// there. Safe to call on every reconnect: an existing note is
-// never overwritten.
-function seedNotes(doc: Y.Doc): void {
-  doc.transact(() => {
-    const notes = doc.getMap<NoteMap>("notes");
-    for (const seed of SEED_NOTES) {
-      if (notes.has(seed.id)) continue;
-      const note = new Y.Map<unknown>();
-      note.set("x", seed.x);
-      note.set("y", seed.y);
-      note.set("w", DEFAULT_NOTE_SIZE.w);
-      note.set("h", DEFAULT_NOTE_SIZE.h);
-      note.set("color", seed.color);
-      note.set("text", new Y.Text(seed.text));
-      notes.set(seed.id, note);
-    }
-  });
 }
 
 // Updates a Y.Text to match the textarea, changing only the part
@@ -297,9 +268,6 @@ function Board({
       // server — disabled so the two-tab test proves server sync.
       broadcast: false,
       onStatus: ({ status: next }) => setStatus(toConnectionStatus(next)),
-      onSynced: ({ state }) => {
-        if (state && notesMap.size === 0) seedNotes(doc);
-      },
       onAuthenticationFailed: ({ reason }) => setAuthError(reason),
     });
     const notesMap = doc.getMap<NoteMap>("notes");
