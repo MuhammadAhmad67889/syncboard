@@ -152,6 +152,92 @@ button {
   color: #64748b;
 }
 
+/* --- Presence bar --- */
+.presence-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e6e8ec;
+  background: #fff;
+}
+
+.presence-count {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.presence-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.presence-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.presence-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.presence-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* --- Remote cursors --- */
+.remote-cursor {
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  align-items: flex-start;
+  /* Cursors are decoration — they must never block clicks. */
+  pointer-events: none;
+}
+
+.remote-cursor-name {
+  margin-left: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The label naming who selected a note, above the note. */
+.note-selector {
+  position: absolute;
+  top: -26px;
+  left: 0;
+  z-index: 5;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* --- Sticky notes --- */
 .note {
   position: absolute;

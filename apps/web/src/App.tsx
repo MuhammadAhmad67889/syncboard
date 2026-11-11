@@ -8,6 +8,7 @@ import {
   type DemoUser,
   type Note,
   type NoteColor,
+  type PresenceUser,
 } from "@syncboard/shared";
 
 // The room every demo client joins. One room = one shared board.
@@ -28,6 +29,11 @@ const SEED_NOTES: Array<{ id: string; x: number; y: number; color: NoteColor; te
   { id: "seed-2", x: 380, y: 220, color: "pink", text: "Ask Sara to\nreview the API" },
   { id: "seed-3", x: 700, y: 120, color: "green", text: "Demo on\nMonday 10am" },
 ];
+
+// Throttle: about 30 cursor updates per second. Pointermove
+// fires far more often than that, and every update is a message
+// to the server.
+const CURSOR_THROTTLE_MS = 33;
 
 // The token endpoint lives on the same server as the sync
 // websocket, so the HTTP URL is the sync URL with ws -> http.
@@ -104,6 +110,39 @@ function updateNoteText(doc: Y.Doc, text: Y.Text, next: string): void {
     if (endCurrent > start) text.delete(start, endCurrent - start);
     if (endNext > start) text.insert(start, next.slice(start, endNext));
   });
+}
+
+// Reads a cursor out of an Awareness state. Anything malformed
+// is not a cursor.
+function asCursor(value: unknown): { x: number; y: number } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { x, y } = value as { x: unknown; y: unknown };
+  return typeof x === "number" && typeof y === "number" ? { x, y } : null;
+}
+
+// Reads a remote user's presence out of an Awareness state.
+// Remote states are untrusted data, so anything malformed is
+// ignored instead of crashing the board.
+function asPresenceUser(state: unknown): PresenceUser | null {
+  if (typeof state !== "object" || state === null) return null;
+  const record = state as Record<string, unknown>;
+  if (
+    typeof record.id !== "string" ||
+    typeof record.name !== "string" ||
+    typeof record.color !== "string"
+  ) {
+    return null;
+  }
+  const selected = record.selectedNoteIds;
+  return {
+    id: record.id,
+    name: record.name,
+    color: record.color,
+    cursor: asCursor(record.cursor),
+    selectedNoteIds: Array.isArray(selected)
+      ? selected.filter((id): id is string => typeof id === "string")
+      : [],
+  };
 }
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -183,8 +222,30 @@ function Board({
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [authError, setAuthError] = useState<string | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
+  // Everyone else on the board, from Awareness. Our own presence
+  // lives in localPresenceRef — the bar and cursors only show
+  // other people.
+  const [presence, setPresence] = useState<PresenceUser[]>([]);
+  // The note this user clicked. null means nothing selected.
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const notesMapRef = useRef<Y.Map<NoteMap> | null>(null);
+  // The provider's Awareness instance (null only if the provider
+  // was created with awareness disabled — we never do that).
+  const awarenessRef = useRef<HocuspocusProvider["awareness"]>(null);
+  // Our own presence: cursor position and selected notes. Kept in
+  // a ref because it changes on every mouse move and must not
+  // re-render the board each time.
+  const localPresenceRef = useRef<PresenceUser>({
+    id: user.id,
+    name: user.name,
+    color: user.color,
+    cursor: null,
+    selectedNoteIds: [],
+  });
+  // When the last cursor position was sent, for the ~30/s throttle.
+  const lastCursorSentRef = useRef(0);
+  const boardRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     id: string;
     pointerId: number;
@@ -232,7 +293,38 @@ function Board({
     notesMap.observeDeep(snapshot);
     snapshot();
 
+    // Presence: this client publishes its own cursor and selection
+    // through Awareness, and reads everyone else's from the same
+    // Awareness instance. Awareness is ephemeral — the server
+    // stores nothing, and a disconnected client's state disappears
+    // on its own.
+    const awareness = provider.awareness;
+    awarenessRef.current = awareness;
+    awareness?.setLocalState({ ...localPresenceRef.current });
+
+    // Re-reads every other user's presence into React state.
+    // Our own state is skipped — it already lives in
+    // localPresenceRef, and the bar/cursors only show other people.
+    function refreshPresence(): void {
+      if (!awareness) return;
+      const others: PresenceUser[] = [];
+      awareness.getStates().forEach((state, clientId) => {
+        if (clientId === awareness.clientID) return;
+        const person = asPresenceUser(state);
+        if (person) others.push(person);
+      });
+      // Stable order so the presence bar doesn't jump around as
+      // states update.
+      others.sort((a, b) => a.name.localeCompare(b.name));
+      setPresence(others);
+    }
+
+    awareness?.on("change", refreshPresence);
+    refreshPresence();
+
     return () => {
+      awareness?.off("change", refreshPresence);
+      awarenessRef.current = null;
       notesMap.unobserveDeep(snapshot);
       provider.destroy();
       doc.destroy();
@@ -275,6 +367,52 @@ function Board({
     if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
   }
 
+  // Publishes the local user's current presence (cursor +
+  // selection) to everyone else. Called after any local change.
+  function publishPresence(): void {
+    awarenessRef.current?.setLocalState({ ...localPresenceRef.current });
+  }
+
+  // Sends the pointer position (in board pixels) to everyone
+  // else, at most once per throttle window.
+  function trackCursor(event: React.PointerEvent<HTMLDivElement>): void {
+    const board = boardRef.current;
+    if (!board || !awarenessRef.current) return;
+    const now = performance.now();
+    if (now - lastCursorSentRef.current < CURSOR_THROTTLE_MS) return;
+    lastCursorSentRef.current = now;
+    const rect = board.getBoundingClientRect();
+    localPresenceRef.current.cursor = {
+      x: Math.round(event.clientX - rect.left),
+      y: Math.round(event.clientY - rect.top),
+    };
+    publishPresence();
+  }
+
+  // The pointer left the board, so other users should stop
+  // seeing a cursor from us.
+  function clearCursor(): void {
+    if (localPresenceRef.current.cursor === null) return;
+    localPresenceRef.current.cursor = null;
+    publishPresence();
+  }
+
+  // Clicking a note selects it, and tells everyone else.
+  function selectNote(noteId: string): void {
+    if (selectedNoteId === noteId) return;
+    setSelectedNoteId(noteId);
+    localPresenceRef.current.selectedNoteIds = [noteId];
+    publishPresence();
+  }
+
+  // Clicking empty board clears the selection.
+  function clearSelection(): void {
+    if (localPresenceRef.current.selectedNoteIds.length === 0) return;
+    setSelectedNoteId(null);
+    localPresenceRef.current.selectedNoteIds = [];
+    publishPresence();
+  }
+
   function changeNoteText(noteId: string, next: string): void {
     const doc = docRef.current;
     const notesMap = notesMapRef.current;
@@ -283,6 +421,27 @@ function Board({
     const text = noteMap?.get("text");
     if (!noteMap || !(text instanceof Y.Text)) return;
     updateNoteText(doc, text, next);
+  }
+
+  // Who selected each note, local user included, so the outline
+  // and label can show every selector at once.
+  const selectorsByNote = new Map<string, PresenceUser[]>();
+  function addSelector(noteId: string, person: PresenceUser): void {
+    const list = selectorsByNote.get(noteId) ?? [];
+    list.push(person);
+    selectorsByNote.set(noteId, list);
+  }
+  if (selectedNoteId) {
+    addSelector(selectedNoteId, {
+      id: user.id,
+      name: user.name,
+      color: user.color,
+      cursor: null,
+      selectedNoteIds: [selectedNoteId],
+    });
+  }
+  for (const person of presence) {
+    for (const noteId of person.selectedNoteIds) addSelector(noteId, person);
   }
 
   return (
@@ -305,35 +464,119 @@ function Board({
           Sign out
         </button>
       </header>
-      <div className="board">
-        {notes.map((note) => (
-          <div
-            key={note.id}
-            className="note"
-            style={{
-              left: note.x,
-              top: note.y,
-              width: note.w,
-              height: note.h,
-              background: NOTE_COLORS[note.color],
-            }}
-          >
-            <div
-              className="note-handle"
-              onPointerDown={(event) => startDrag(event, note)}
-              onPointerMove={moveDrag}
-              onPointerUp={endDrag}
-            />
-            <textarea
-              className="note-text"
-              value={note.text}
-              onChange={(event) => changeNoteText(note.id, event.target.value)}
-              aria-label="Note text"
-            />
-          </div>
+      <div className="presence-bar" aria-label="People on this board">
+        <span className="presence-count">{presence.length + 1} online</span>
+        <PresenceChip person={user} you />
+        {presence.map((person) => (
+          <PresenceChip key={person.id} person={person} />
         ))}
+      </div>
+      <div
+        className="board"
+        ref={boardRef}
+        onPointerMove={trackCursor}
+        onPointerLeave={clearCursor}
+        onPointerDown={(event) => {
+          // A click on empty board (not on a note) clears the selection.
+          if (event.target === event.currentTarget) clearSelection();
+        }}
+      >
+        {notes.map((note) => {
+          const selectors = selectorsByNote.get(note.id) ?? [];
+          return (
+            <div
+              key={note.id}
+              className="note"
+              onPointerDown={(event) => {
+                if (event.button === 0) selectNote(note.id);
+              }}
+              style={{
+                left: note.x,
+                top: note.y,
+                width: note.w,
+                height: note.h,
+                background: NOTE_COLORS[note.color],
+                // A selected note gets an outline in the first
+                // selector's color, on top of the usual shadow.
+                ...(selectors.length > 0
+                  ? {
+                      boxShadow: `0 0 0 2px ${selectors[0].color}, 0 2px 8px rgb(15 23 42 / 0.15)`,
+                    }
+                  : undefined),
+              }}
+            >
+              {selectors.length > 0 && (
+                <span
+                  className="note-selector"
+                  style={{ background: selectors[0].color }}
+                >
+                  {selectors.map((person) => person.name).join(", ")}
+                </span>
+              )}
+              <div
+                className="note-handle"
+                onPointerDown={(event) => startDrag(event, note)}
+                onPointerMove={moveDrag}
+                onPointerUp={endDrag}
+              />
+              <textarea
+                className="note-text"
+                value={note.text}
+                onChange={(event) => changeNoteText(note.id, event.target.value)}
+                aria-label="Note text"
+              />
+            </div>
+          );
+        })}
+        {presence.map((person) =>
+          person.cursor ? (
+            <div
+              key={person.id}
+              className="remote-cursor"
+              style={{ left: person.cursor.x, top: person.cursor.y }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M3 2 L3 19 L7.5 14.5 L10.5 21 L13 20 L10 13.5 L16 13.5 Z"
+                  fill={person.color}
+                  stroke="#fff"
+                  strokeWidth="1"
+                />
+              </svg>
+              <span
+                className="remote-cursor-name"
+                style={{ background: person.color }}
+              >
+                {person.name}
+              </span>
+            </div>
+          ) : null,
+        )}
         {notes.length === 0 && <p className="board-empty">Loading notes…</p>}
       </div>
     </div>
+  );
+}
+
+// One person in the presence bar: an avatar circle with their
+// initial, their name, and a green dot while they are online.
+function PresenceChip({
+  person,
+  you = false,
+}: {
+  person: Pick<PresenceUser, "id" | "name" | "color">;
+  you?: boolean;
+}) {
+  return (
+    <span className="presence-user">
+      <span className="presence-avatar" style={{ background: person.color }}>
+        {person.name[0]}
+        <span className="presence-dot" />
+      </span>
+      <span className="presence-name">
+        {person.name}
+        {you ? " (you)" : ""}
+      </span>
+    </span>
   );
 }
