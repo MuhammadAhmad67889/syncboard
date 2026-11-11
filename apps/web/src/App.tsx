@@ -229,6 +229,24 @@ function Board({
   // When the last cursor position was sent, for the ~30/s throttle.
   const lastCursorSentRef = useRef(0);
   const boardRef = useRef<HTMLDivElement | null>(null);
+  // Zoom and pan are per-user view state: local only, never synced
+  // and never persisted — the other tab keeps its own view.
+  const MIN_ZOOM = 0.25;
+  const MAX_ZOOM = 3;
+  const ZOOM_STEP = 1.25;
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  // The transformed layer inside the board — the notes live in it.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  // The pan in progress, if any — same shape as a note drag.
+  const panRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
+  const [panning, setPanning] = useState(false);
   const dragRef = useRef<{
     id: string;
     pointerId: number;
@@ -370,8 +388,10 @@ function Board({
     if (!drag || !doc || !notesMap || event.pointerId !== drag.pointerId) return;
     const noteMap = notesMap.get(drag.id);
     if (!noteMap) return;
-    const nextX = Math.max(0, drag.noteX + event.clientX - drag.startX);
-    const nextY = Math.max(0, drag.noteY + event.clientY - drag.startY);
+    // Screen pixels become board pixels by dividing by the zoom —
+    // at 200% a 20px mouse move is only 10 board pixels.
+    const nextX = Math.max(0, drag.noteX + (event.clientX - drag.startX) / zoom);
+    const nextY = Math.max(0, drag.noteY + (event.clientY - drag.startY) / zoom);
     // Stamped with our origin so undo can revert this move — and
     // only this user's moves. Pointermove fires faster than the
     // capture timeout, so the whole drag lands on one undo step.
@@ -390,6 +410,78 @@ function Board({
     }
   }
 
+  // Converts a screen (client) point to board coordinates, undoing
+  // the current pan and zoom. Every pointer handler that places or
+  // moves something on the board goes through here, so a click,
+  // a drag, and a cursor all agree on where things are.
+  function toBoardCoords(clientX: number, clientY: number): { x: number; y: number } {
+    const board = boardRef.current;
+    if (!board) return { x: 0, y: 0 };
+    const rect = board.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top - pan.y) / zoom,
+    };
+  }
+
+  // Zooms by a factor around the center of the visible board, so
+  // the middle of the view stays put. Zoom is clamped to 25–300%.
+  function zoomBy(factor: number): void {
+    const board = boardRef.current;
+    if (!board) return;
+    const rect = board.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * factor));
+    if (nextZoom === zoom) return;
+    const scale = nextZoom / zoom;
+    setZoom(nextZoom);
+    // Keep the screen point under the board center fixed:
+    // pan' = center - scale * (center - pan).
+    setPan({
+      x: centerX - scale * (centerX - pan.x),
+      y: centerY - scale * (centerY - pan.y),
+    });
+  }
+
+  // Back to 100% with no pan — the default view.
+  function resetView(): void {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }
+
+  // Dragging empty canvas pans the view (per user — never synced).
+  // The pointer is captured on the board, so the pan keeps going
+  // even if it slides off the edge.
+  function startPan(event: React.PointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: pan.x,
+      panY: pan.y,
+    };
+    setPanning(true);
+  }
+
+  function movePan(event: React.PointerEvent<HTMLDivElement>): void {
+    const panDrag = panRef.current;
+    if (!panDrag || event.pointerId !== panDrag.pointerId) return;
+    setPan({
+      x: panDrag.panX + event.clientX - panDrag.startX,
+      y: panDrag.panY + event.clientY - panDrag.startY,
+    });
+  }
+
+  function endPan(event: React.PointerEvent<HTMLDivElement>): void {
+    if (panRef.current?.pointerId === event.pointerId) {
+      panRef.current = null;
+      setPanning(false);
+    }
+  }
+
   // Publishes the local user's current presence (cursor +
   // selection) to everyone else. Called after any local change.
   function publishPresence(): void {
@@ -399,15 +491,17 @@ function Board({
   // Sends the pointer position (in board pixels) to everyone
   // else, at most once per throttle window.
   function trackCursor(event: React.PointerEvent<HTMLDivElement>): void {
-    const board = boardRef.current;
-    if (!board || !awarenessRef.current) return;
+    if (!awarenessRef.current) return;
     const now = performance.now();
     if (now - lastCursorSentRef.current < CURSOR_THROTTLE_MS) return;
     lastCursorSentRef.current = now;
-    const rect = board.getBoundingClientRect();
+    // Board pixels, not screen pixels: the cursor is published in
+    // board coordinates so it lands on the same note in another
+    // tab no matter what zoom or pan that tab is using.
+    const point = toBoardCoords(event.clientX, event.clientY);
     localPresenceRef.current.cursor = {
-      x: Math.round(event.clientX - rect.left),
-      y: Math.round(event.clientY - rect.top),
+      x: Math.round(point.x),
+      y: Math.round(point.y),
     };
     publishPresence();
   }
@@ -476,23 +570,22 @@ function Board({
     const board = boardRef.current;
     if (!board) return;
     const rect = board.getBoundingClientRect();
+    const center = toBoardCoords(rect.left + rect.width / 2, rect.top + rect.height / 2);
     createNote(
-      Math.max(0, rect.width / 2 - DEFAULT_NOTE_SIZE.w / 2),
-      Math.max(0, rect.height / 2 - DEFAULT_NOTE_SIZE.h / 2),
+      Math.max(0, center.x - DEFAULT_NOTE_SIZE.w / 2),
+      Math.max(0, center.y - DEFAULT_NOTE_SIZE.h / 2),
     );
   }
 
   // Double-clicking empty canvas creates a note centered on the
   // click. A double-click on a note does nothing — its target is
-  // the note, not the board.
+  // the note, not the board or the canvas background.
   function createNoteAtPoint(event: React.MouseEvent<HTMLDivElement>): void {
-    if (event.target !== event.currentTarget) return;
-    const board = boardRef.current;
-    if (!board) return;
-    const rect = board.getBoundingClientRect();
+    if (event.target !== event.currentTarget && event.target !== canvasRef.current) return;
+    const point = toBoardCoords(event.clientX, event.clientY);
     createNote(
-      Math.max(0, event.clientX - rect.left - DEFAULT_NOTE_SIZE.w / 2),
-      Math.max(0, event.clientY - rect.top - DEFAULT_NOTE_SIZE.h / 2),
+      Math.max(0, point.x - DEFAULT_NOTE_SIZE.w / 2),
+      Math.max(0, point.y - DEFAULT_NOTE_SIZE.h / 2),
     );
   }
 
@@ -555,8 +648,14 @@ function Board({
     if (!resize || !doc || !notesMap || event.pointerId !== resize.pointerId) return;
     const noteMap = notesMap.get(resize.id);
     if (!noteMap) return;
-    const nextW = Math.max(MIN_NOTE_SIZE, resize.noteW + event.clientX - resize.startX);
-    const nextH = Math.max(MIN_NOTE_SIZE, resize.noteH + event.clientY - resize.startY);
+    const nextW = Math.max(
+      MIN_NOTE_SIZE,
+      resize.noteW + (event.clientX - resize.startX) / zoom,
+    );
+    const nextH = Math.max(
+      MIN_NOTE_SIZE,
+      resize.noteH + (event.clientY - resize.startY) / zoom,
+    );
     // Same batching as a drag: rapid moves merge into one undo step.
     doc.transact(() => {
       noteMap.set("w", Math.round(nextW));
@@ -710,19 +809,66 @@ function Board({
         >
           Redo
         </button>
+        <span className="toolbar-divider" aria-hidden="true" />
+        <div className="zoom-controls" role="group" aria-label="Zoom">
+          <button
+            type="button"
+            className="toolbar-button zoom-button"
+            onClick={() => zoomBy(1 / ZOOM_STEP)}
+            aria-label="Zoom out"
+            title="Zoom out"
+          >
+            −
+          </button>
+          <span className="zoom-label" aria-live="polite">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            className="toolbar-button zoom-button"
+            onClick={() => zoomBy(ZOOM_STEP)}
+            aria-label="Zoom in"
+            title="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={resetView}
+            disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
+            title="Reset view to 100%"
+          >
+            Reset
+          </button>
+        </div>
       </div>
       <div
-        className="board"
+        className={`board${panning ? " panning" : ""}`}
         ref={boardRef}
-        onPointerMove={trackCursor}
+        onPointerMove={(event) => {
+          trackCursor(event);
+          movePan(event);
+        }}
         onPointerLeave={clearCursor}
         onPointerDown={(event) => {
-          // A click on empty board (not on a note) clears the selection.
-          if (event.target === event.currentTarget) clearSelection();
+          // A press on empty board (not on a note) clears the
+          // selection and starts a pan.
+          if (event.target === event.currentTarget || event.target === canvasRef.current) {
+            clearSelection();
+            startPan(event);
+          }
         }}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
         onDoubleClick={createNoteAtPoint}
       >
-        {notes.map((note) => {
+        <div
+          className="board-canvas"
+          ref={canvasRef}
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+        >
+          {notes.map((note) => {
           const selectors = selectorsByNote.get(note.id) ?? [];
           return (
             <div
@@ -791,12 +937,20 @@ function Board({
             </div>
           );
         })}
+        {notes.length === 0 && <p className="board-empty">Loading notes…</p>}
+        </div>
         {presence.map((person) =>
           person.cursor ? (
             <div
               key={person.id}
               className="remote-cursor"
-              style={{ left: person.cursor.x, top: person.cursor.y }}
+              // Screen space, not board space: the cursor keeps a
+              // constant size and lands on the same note in this
+              // tab no matter what zoom or pan this tab is using.
+              style={{
+                left: pan.x + zoom * person.cursor.x,
+                top: pan.y + zoom * person.cursor.y,
+              }}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -815,7 +969,6 @@ function Board({
             </div>
           ) : null,
         )}
-        {notes.length === 0 && <p className="board-empty">Loading notes…</p>}
       </div>
     </div>
   );
