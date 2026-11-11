@@ -77,9 +77,18 @@ Other useful commands: `npm run build`, `npm run typecheck`,
   UndoManager only tracks that origin, so your Ctrl+Z never
   reverts another user's edits. Drags and typing batch into one
   undo step.
-- **Phase 4 — Persistence + reconnect:** debounced binary
-  persistence to SQLite, reload restores the board, offline edits
-  merge on reconnect.
+- **Phase 4 — Persistence + reconnect (done):** the sync server
+  saves the board to SQLite (`DATABASE_URL`, default
+  `file:./data/syncboard.db` — a gitignored file, so it never
+  reaches the repo). The serialized Yjs document is written back
+  2 seconds after the last change, so a drag writes once instead
+  of once per pointermove. A server restart restores the board,
+  and the starter notes are seeded by the server only when a board
+  has no saved state at all — deleting every note and reloading
+  stays empty. Offline edits merge on reconnect: the client keeps
+  its local document and Yjs syncs the difference when it comes
+  back. To reset the board, stop the server and delete
+  `data/syncboard.db`.
 - **Phase 5 — Polish + demo:** toolbar, zoom controls, shareable
   demo, a documented two-user test, final README.
 
