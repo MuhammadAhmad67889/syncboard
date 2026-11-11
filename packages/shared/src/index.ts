@@ -42,6 +42,23 @@ export interface PresenceUser {
   selectedNoteIds: string[];
 }
 
+// A demo user for the Phase 1 sign-in. These are hardcoded on
+// purpose: there are no real accounts yet, and the demo just needs
+// a few named people so two browser tabs can be two different
+// users. The color is the user's cursor and presence color
+// (Phase 2 reuses it).
+export interface DemoUser {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export const DEMO_USERS: DemoUser[] = [
+  { id: "ahmad", name: "Ahmad", color: "#2563eb" },
+  { id: "sara", name: "Sara", color: "#db2777" },
+  { id: "omar", name: "Omar", color: "#059669" },
+];
+
 // Environment variable names used across the repo, kept in one
 // place so a rename only touches this file.
 export const ENV_VARS = {
