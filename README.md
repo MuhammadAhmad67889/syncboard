@@ -100,7 +100,9 @@ Other useful commands: `npm run build`, `npm run typecheck`,
 
 ## Demo
 
-<!-- The shareable Replit demo link goes here once it is set up. -->
+**Live demo:** https://b2a66c5b-b065-4e44-b8ee-0cc098d0fd9f-00-14lu9hdlgqec3.pike.replit.dev/
+
+(This is a Replit dev link: it sleeps when the workspace is left idle, so if it does not load, it needs the workspace reopened. A permanent deployment would need a published Replit deployment.)
 
 Try it with two browser windows side by side: sign in as Ahmad in
 one and Sara in the other, and follow
