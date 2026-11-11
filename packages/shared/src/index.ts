@@ -31,6 +31,24 @@ export interface Note {
 // The default size for a newly created note.
 export const DEFAULT_NOTE_SIZE = { w: 200, h: 200 } as const;
 
+// The three starter notes for a brand-new board. The ids are
+// fixed, so seeding twice still ends up with exactly one copy
+// of each note. The sync server seeds these (Phase 4) — the
+// server is the source of truth for whether a board already has
+// state, so clients never seed: a board whose notes were all
+// deleted must never get its starter notes back.
+export const SEED_NOTES: Array<{
+  id: string;
+  x: number;
+  y: number;
+  color: NoteColor;
+  text: string;
+}> = [
+  { id: "seed-1", x: 80, y: 120, color: "yellow", text: "Ship Phase 1\nby Friday" },
+  { id: "seed-2", x: 380, y: 220, color: "pink", text: "Ask Sara to\nreview the API" },
+  { id: "seed-3", x: 700, y: 120, color: "green", text: "Demo on\nMonday 10am" },
+];
+
 // One connected user, as shared through the Awareness protocol.
 // cursor is null when the pointer is off the board;
 // selectedNoteIds lists the notes this user has selected right now.
