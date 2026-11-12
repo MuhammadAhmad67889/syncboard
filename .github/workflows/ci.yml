@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # Node 24: the sync server targets it (better-sqlite3 needs a
+      # native build, so the version matters — see below).
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      # better-sqlite3 ships a prebuilt binary for common platforms
+      # (prebuild-install); on any other runner it compiles from
+      # source, which needs a C++ toolchain — ubuntu-latest has one.
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
