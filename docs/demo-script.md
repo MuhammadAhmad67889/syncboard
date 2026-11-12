@@ -1,14 +1,16 @@
 # SyncBoard demo script — a 2-user walkthrough
 
 Run this with two browser windows (or two tabs) side by side. Both
-point at the same board. No accounts, no setup beyond `npm run dev`.
+point at the same board. Create a free account per window, or use
+"Try the demo" in one of them — no setup beyond `npm run dev`.
 
 ## Setup
 
 1. Start the app: `npm install`, `cp .env.example .env`, `npm run dev`.
-2. Open http://localhost:5173 in two windows. In the left window pick
-   **Ahmad**, in the right window pick **Sara**. Both windows show
-   "Connected" and the same three starter notes.
+2. Open http://localhost:5173 in two windows. In the left window
+   create an account called **ahmad**, in the right window create
+   one called **sara** (any password of 8 characters or more).
+   Both windows show "Connected" and the same three starter notes.
 
 ## The walkthrough
 
@@ -54,7 +56,46 @@ note by its top strip to a new spot, then pick the blue dot in the
 toolbar while it is selected.
 **See:** In Sara's window the note moves and turns blue.
 
-### 7. Undo only reverts your own edits
+### 7. Shapes draw live — including the pen
+
+**Do:** In Ahmad's window, click **Rectangle** in the toolbar and
+drag on empty canvas (not on a note — a press that starts on a note
+draws nothing). Then click **Pen** and scribble a short stroke.
+In Sara's window, click **Ellipse** and drag one out, then click
+**Line** and drag a line.
+**See:** Every shape appears in the other window as it is drawn —
+the pen stroke grows while Ahmad is still drawing it. Click a
+shape to select it: it gets a resize handle and a delete button,
+and the toolbar color dots recolor it, just like a note.
+
+### 8. A second board stays separate
+
+**Do:** In Ahmad's window, click **+ New board**, name it
+"Design", and click **Create board**. Type a note on it: "Only on
+Design".
+**See:** Sara's board list gains a "Design" tab, but she is still
+on the Main board and does not see the "Only on Design" note —
+boards are separate rooms. Now Sara clicks the **Design** tab.
+**See:** She is on the Design board and sees the note. Switch both
+windows back to **Main board** to continue.
+
+### 9. Text boxes and export
+
+**Do:** In Ahmad's window, click **Text** in the toolbar, click
+empty canvas, and type "Launch plan". Click the **L** button in the
+toolbar while the box is selected.
+**See:** The text box appears in Sara's window in large text. Now
+in Ahmad's window, click **Export PNG** — a PNG image of the board
+downloads. Then click **Export JSON** — a JSON file with the
+board's notes, shapes, and text boxes downloads.
+**See (import):** In Ahmad's window, create another board, add a
+throwaway note to it, then click **Import JSON** and pick the file
+just exported. The confirm dialog asks first — accept it.
+**See:** The throwaway note is gone and the board now holds the
+exported content, including the "Launch plan" text box — and Sara
+sees the same, because an import is a shared edit like any other.
+
+### 10. Undo only reverts your own edits
 
 **Do:** In Sara's window, type "SARA-ONLY" into any note. In
 Ahmad's window, type "AHMAD-ONLY" into a different note, then
@@ -62,21 +103,33 @@ press **Ctrl+Z**.
 **See:** Ahmad's "AHMAD-ONLY" disappears — but Sara's "SARA-ONLY"
 is still there. Undo never touches another user's work.
 
-### 8. The board survives a restart
+### 11. Accounts: sign out, wrong password, demo
+
+**Do:** In Ahmad's window, click **Sign out**, then log back in
+with the same username and password.
+**See:** Ahmad is back on the board, same name and color. Now sign
+out again and try logging in with the wrong password.
+**See:** "Incorrect username or password." — and the board stays
+hidden. Finally, click **Try the demo**.
+**See:** The board opens as the Demo user, no password needed.
+Reload the window: the Demo session is still there, no login
+screen.
+
+### 12. The board survives a restart
 
 **Do:** Stop the sync server (`Ctrl+C` in its terminal) and start
 it again with `npm run dev:server`. Reload both windows.
 **See:** Every note is still there, exactly as you left it. The
 board is saved to SQLite on the server, not just in the browser.
 
-### 9. A fresh user joins mid-session
+### 13. A fresh user joins mid-session
 
 **Do:** Open a third window and sign in as **Omar**.
 **See:** Omar sees the whole current board — all the notes, all the
 edits — and the presence bar in every window now says "3 online".
 Ahmad and Sara's windows are not disturbed.
 
-### 10. Zoom and pan are yours alone
+### 14. Zoom and pan are yours alone
 
 **Do:** In Ahmad's window, click **+** in the toolbar twice, then
 drag the empty canvas to pan.
@@ -89,4 +142,5 @@ back to 100%. Pan and zoom are per-user; only the notes are shared.
 To start the demo over from the three starter notes: stop the
 server and delete `data/syncboard.db`, then start the server again.
 The starter notes are seeded by the server when there is no saved
-board.
+board. (Deleting the database also removes every account — you
+will need to create them again.)
