@@ -19,6 +19,8 @@
     "dev:server": "npm run dev --workspace=@syncboard/sync-server",
     "dev:web": "npm run dev --workspace=@syncboard/web",
     "lint": "eslint . --max-warnings 0",
+    "pretest": "npm run build --workspace=@syncboard/shared",
+    "pretypecheck": "npm run build --workspace=@syncboard/shared",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
