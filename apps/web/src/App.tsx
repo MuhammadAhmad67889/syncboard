@@ -1,18 +1,60 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import {
+  DEFAULT_BOARD_ID,
   DEFAULT_NOTE_SIZE,
-  DEMO_USERS,
+  DEFAULT_TEXT_SIZE,
+  FONT_SIZE_PX,
+  MIN_SHAPE_SIZE,
+  MIN_TEXT_SIZE,
   NOTE_COLORS,
-  type DemoUser,
+  TEXT_FONT_SIZES,
+  createShape,
+  createTextBox,
+  normalizeShapeBox,
+  penPathFromPoints,
+  shapeBoxFromPoints,
+  type BoardMeta,
   type Note,
   type NoteColor,
   type PresenceUser,
+  type SessionUser,
+  type Shape,
+  type ShapeKind,
+  type ShapePoint,
+  type TextBox,
+  type TextFontSize,
 } from "@syncboard/shared";
-
-// The room every demo client joins. One room = one shared board.
-const ROOM_NAME = "syncboard-demo";
+import {
+  canDeleteBoard,
+  createBoard,
+  deleteBoard,
+  fetchBoards,
+  resolveCurrentBoard,
+} from "./boards";
+import {
+  SHAPE_STROKE_COLORS,
+  appendPenPoint,
+  buildShapeMap,
+  readShape,
+  type ShapeMap,
+} from "./shapes";
+import {
+  TEXT_COLORS,
+  buildTextMap,
+  readTextBox,
+  setTextFontSize,
+  type TextMap,
+} from "./texts";
+import {
+  applyBoardExport,
+  boardExportToJson,
+  downloadBlob,
+  parseBoardExport,
+  renderBoardToCanvas,
+  type BoardExport,
+} from "./export";
 
 // The sync server address, from the environment.
 const SYNC_URL = import.meta.env.VITE_SYNC_URL ?? "ws://localhost:1234";
@@ -20,6 +62,22 @@ const SYNC_URL = import.meta.env.VITE_SYNC_URL ?? "ws://localhost:1234";
 // One note inside the shared document: a Y.Map whose fields are
 // numbers (x, y, w, h), a color name, and a Y.Text for the text.
 type NoteMap = Y.Map<unknown>;
+
+// The active board tool, from the toolbar. Select moves and edits
+// things; Note drops a sticky note; Text drops a text box; the
+// four shape tools draw shapes by dragging on empty canvas.
+type Tool = "select" | "note" | "text" | ShapeKind;
+
+// The toolbar tools, in display order.
+const TOOLS: Array<{ id: Tool; label: string }> = [
+  { id: "select", label: "Select" },
+  { id: "note", label: "Note" },
+  { id: "text", label: "Text" },
+  { id: "rect", label: "Rectangle" },
+  { id: "ellipse", label: "Ellipse" },
+  { id: "line", label: "Line" },
+  { id: "pen", label: "Pen" },
+];
 
 // Throttle: about 30 cursor updates per second. Pointermove
 // fires far more often than that, and every update is a message
@@ -106,6 +164,8 @@ function asPresenceUser(state: unknown): PresenceUser | null {
     return null;
   }
   const selected = record.selectedNoteIds;
+  const selectedShapes = record.selectedShapeIds;
+  const selectedTexts = record.selectedTextIds;
   return {
     id: record.id,
     name: record.name,
@@ -113,6 +173,12 @@ function asPresenceUser(state: unknown): PresenceUser | null {
     cursor: asCursor(record.cursor),
     selectedNoteIds: Array.isArray(selected)
       ? selected.filter((id): id is string => typeof id === "string")
+      : [],
+    selectedShapeIds: Array.isArray(selectedShapes)
+      ? selectedShapes.filter((id): id is string => typeof id === "string")
+      : [],
+    selectedTextIds: Array.isArray(selectedTexts)
+      ? selectedTexts.filter((id): id is string => typeof id === "string")
       : [],
   };
 }
@@ -127,82 +193,438 @@ function toConnectionStatus(status: string): ConnectionStatus {
   return "disconnected";
 }
 
-export default function App() {
-  const [session, setSession] = useState<{ user: DemoUser; token: string } | null>(null);
-  const [signingIn, setSigningIn] = useState(false);
-  const [signInError, setSignInError] = useState<string | null>(null);
+// The localStorage key for the session: the token and the user
+// it belongs to. The token is what the sync server verifies, so
+// keeping it here is what keeps the user signed in across reloads.
+const SESSION_KEY = "syncboard.session";
 
-  // Signs in as a demo user: the sync server issues a token for
-  // the user picked here, and the board connects with that token.
-  async function signIn(user: DemoUser): Promise<void> {
-    setSigningIn(true);
-    setSignInError(null);
-    try {
-      const response = await fetch(`${httpSyncUrl()}/token?user=${encodeURIComponent(user.id)}`);
-      if (!response.ok) {
-        throw new Error(`Token request failed (${response.status}) — is the sync server running?`);
-      }
-      const data = await response.json();
-      setSession({ user, token: data.token });
-    } catch (error) {
-      setSignInError(error instanceof Error ? error.message : "Could not sign in.");
-    } finally {
-      setSigningIn(false);
+type Session = { user: SessionUser; token: string };
+
+// Reads a saved session back. Anything malformed is not a
+// session — the user just signs in again.
+function loadStoredSession(): Session | null {
+  try {
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as { token?: unknown }).token !== "string"
+    ) {
+      return null;
     }
+    const user = (parsed as { user?: unknown }).user;
+    if (
+      typeof user !== "object" ||
+      user === null ||
+      typeof (user as SessionUser).id !== "string" ||
+      typeof (user as SessionUser).name !== "string" ||
+      typeof (user as SessionUser).color !== "string"
+    ) {
+      return null;
+    }
+    return parsed as Session;
+  } catch {
+    return null;
+  }
+}
+
+export default function App() {
+  // Restored from localStorage when the page loads, so a reload
+  // keeps the user on the board. A stored token is only trusted
+  // once the sync server accepts it — if the server rejects it,
+  // onAuthFailed below drops the session and the auth screen
+  // comes back.
+  const [session, setSession] = useState<Session | null>(loadStoredSession);
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  // Shown on the auth screen when a restored session turned out
+  // to be expired or invalid.
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+
+  // Saves the session and opens the board. Called after a
+  // successful login, signup, or demo sign-in.
+  function openSession(next: Session): void {
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    setAuthError(null);
+    setAuthNotice(null);
+    setPassword("");
+    setSession(next);
+  }
+
+  // Signs out: the stored token is dropped, so a reload after
+  // this lands on the auth screen instead of the board. The
+  // form goes back to login — signing up again is one link away.
+  function signOut(): void {
+    window.localStorage.removeItem(SESSION_KEY);
+    setMode("login");
+    setSession(null);
+  }
+
+  // The sync server rejected the stored token (it expired, or
+  // the database was reset). Drop the session and show the auth
+  // screen with a note, instead of sitting on a board that can
+  // never connect. Wrapped in useCallback so the board's sync
+  // effect keeps a stable reference — it lists this callback as
+  // a dependency, and a fresh function every render would tear
+  // the live connection down and rebuild it.
+  const handleAuthFailed = useCallback((): void => {
+    window.localStorage.removeItem(SESSION_KEY);
+    setMode("login");
+    setSession(null);
+    setAuthNotice("Your session expired — please log in again.");
+  }, []);
+
+  // One auth request to the sync server. A non-2xx answer throws
+  // with the server's plain message, so the form can show it.
+  async function authRequest(path: string, body?: { username: string; password: string }): Promise<Session> {
+    const response = await fetch(`${httpSyncUrl()}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(
+        typeof data?.error === "string" ? data.error : `Sign-in failed (${response.status}).`,
+      );
+    }
+    return data as Session;
+  }
+
+  // Logs in or signs up with the form's username and password.
+  async function submitAuth(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const next = await authRequest(
+        mode === "login" ? "/auth/login" : "/auth/signup",
+        { username, password },
+      );
+      openSession(next);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not sign in.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  // Signs in as the built-in demo account — no username or
+  // password needed. The demo is for trying the board, not for
+  // keeping work: anyone can sign in as Demo.
+  async function signInAsDemo(): Promise<void> {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      openSession(await authRequest("/auth/demo"));
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not start the demo.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  // Switches between the login and signup forms, clearing the
+  // last error so it does not follow the user across.
+  function switchMode(next: "login" | "signup"): void {
+    setMode(next);
+    setAuthError(null);
   }
 
   if (!session) {
     return (
       <main className="picker">
         <h1>SyncBoard</h1>
-        <p>Pick a demo user to join the board.</p>
-        <div className="picker-users">
-          {DEMO_USERS.map((user) => (
-            <button
-              key={user.id}
-              type="button"
-              className="picker-user"
-              disabled={signingIn}
-              onClick={() => void signIn(user)}
-            >
-              <span className="user-dot" style={{ background: user.color }} />
-              {user.name}
-            </button>
-          ))}
-        </div>
-        {signInError && <p className="picker-error">{signInError}</p>}
+        <p>
+          {mode === "login"
+            ? "Log in to join the board."
+            : "Create an account to join the board."}
+        </p>
+        <form className="picker-form" onSubmit={(event) => void submitAuth(event)}>
+          <label className="picker-field">
+            Username
+            <input
+              className="picker-input"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              maxLength={20}
+              autoFocus
+            />
+          </label>
+          <label className="picker-field">
+            Password
+            <input
+              className="picker-input"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+            />
+          </label>
+          {authError && (
+            <p className="picker-error" role="alert">
+              {authError}
+            </p>
+          )}
+          <button type="submit" className="picker-submit" disabled={authBusy}>
+            {mode === "login" ? "Log in" : "Create account"}
+          </button>
+        </form>
+        {mode === "login" ? (
+          <button type="button" className="picker-switch" onClick={() => switchMode("signup")}>
+            No account yet? Create one
+          </button>
+        ) : (
+          <button type="button" className="picker-switch" onClick={() => switchMode("login")}>
+            Already have an account? Log in
+          </button>
+        )}
+        <button
+          type="button"
+          className="picker-user"
+          disabled={authBusy}
+          onClick={() => void signInAsDemo()}
+        >
+          Try the demo
+        </button>
+        {authNotice && <p className="picker-hint">{authNotice}</p>}
         <p className="picker-hint">
-          Demo sign-in only — the sync server issues a token for the user you pick. Open the board
-          in two tabs as two different users to see live sync.
+          Usernames are 3–20 characters, letters, numbers, underscores, and hyphens only;
+          passwords are at least 8 characters. The demo needs no account — open the board in two
+          tabs, one signed in and one on the demo, to see live sync.
         </p>
       </main>
     );
   }
 
-  return <Board user={session.user} token={session.token} onSignOut={() => setSession(null)} />;
+  return (
+    <BoardsApp
+      user={session.user}
+      token={session.token}
+      onSignOut={signOut}
+      onAuthFailed={handleAuthFailed}
+    />
+  );
+}
+
+// Owns the board list and which board is open. The Board below
+// is keyed by board id, so switching boards unmounts it and a
+// fresh provider, document, undo stack, and presence join the
+// new room — undo and presence are per-board, never shared.
+function BoardsApp({
+  user,
+  token,
+  onSignOut,
+  onAuthFailed,
+}: {
+  user: SessionUser;
+  token: string;
+  onSignOut: () => void;
+  onAuthFailed: () => void;
+}) {
+  const [boards, setBoards] = useState<BoardMeta[] | null>(null);
+  const [boardsError, setBoardsError] = useState<string | null>(null);
+  const [currentBoardId, setCurrentBoardId] = useState(DEFAULT_BOARD_ID);
+  // A short note shown when the open board was deleted — by this
+  // user or by someone else — and the app moved back to the
+  // default board.
+  const [notice, setNotice] = useState<string | null>(null);
+  // Refs mirror the state above so the polling loop below always
+  // sees the latest list and board without restarting.
+  const boardsRef = useRef<BoardMeta[] | null>(null);
+  const currentBoardRef = useRef(currentBoardId);
+  useEffect(() => {
+    boardsRef.current = boards;
+  }, [boards]);
+  useEffect(() => {
+    currentBoardRef.current = currentBoardId;
+  }, [currentBoardId]);
+
+  // Loads the board list once, when the app opens.
+  useEffect(() => {
+    let stopped = false;
+    void fetchBoards(httpSyncUrl())
+      .then((next) => {
+        if (!stopped) setBoards(next);
+      })
+      .catch((error: unknown) => {
+        if (!stopped) {
+          setBoardsError(error instanceof Error ? error.message : "Could not load boards.");
+        }
+      });
+    return () => {
+      stopped = true;
+    };
+  }, []);
+
+  // Re-checks the list every few seconds. That is how a client
+  // learns its board was deleted by someone else: the board
+  // disappears from the list, and this client moves back to the
+  // default board with a note instead of sitting on a dead board.
+  // A failed poll is ignored — the last good list stays put.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void fetchBoards(httpSyncUrl())
+        .then((next) => {
+          const before = boardsRef.current;
+          const openId = currentBoardRef.current;
+          setBoards(next);
+          if (resolveCurrentBoard(next, openId) !== openId) {
+            const name = before?.find((board) => board.id === openId)?.name ?? "That board";
+            setCurrentBoardId(DEFAULT_BOARD_ID);
+            setNotice(`"${name}" was deleted, so you're back on the Main board.`);
+          }
+        })
+        .catch(() => {
+          // Keep the last good list; the next poll retries.
+        });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  function switchBoard(boardId: string): void {
+    setCurrentBoardId(boardId);
+    setNotice(null);
+  }
+
+  // Creates a board and opens it. Returns false when the server
+  // refused, so the form can stay open for another try.
+  async function handleCreateBoard(name: string): Promise<boolean> {
+    setBoardsError(null);
+    try {
+      const created = await createBoard(httpSyncUrl(), name);
+      setBoards((prev) => (prev ? [...prev, created] : [created]));
+      setCurrentBoardId(created.id);
+      setNotice(null);
+      return true;
+    } catch (error) {
+      setBoardsError(error instanceof Error ? error.message : "Could not create board.");
+      return false;
+    }
+  }
+
+  // Deletes a board after a confirm step. Deleting the open
+  // board moves this client back to the default board; deleting
+  // another board leaves the open one alone.
+  async function handleDeleteBoard(board: BoardMeta): Promise<void> {
+    if (
+      !window.confirm(
+        `Delete board "${board.name}"? Its notes and shapes will be gone for everyone.`,
+      )
+    ) {
+      return;
+    }
+    setBoardsError(null);
+    try {
+      await deleteBoard(httpSyncUrl(), board.id);
+      setBoards((prev) => (prev ?? []).filter((item) => item.id !== board.id));
+      if (board.id === currentBoardRef.current) {
+        setCurrentBoardId(DEFAULT_BOARD_ID);
+        setNotice(`"${board.name}" was deleted. You're back on the Main board.`);
+      }
+    } catch (error) {
+      setBoardsError(error instanceof Error ? error.message : "Could not delete board.");
+    }
+  }
+
+  return (
+    <Board
+      key={currentBoardId}
+      user={user}
+      token={token}
+      onSignOut={onSignOut}
+      onAuthFailed={onAuthFailed}
+      boardId={currentBoardId}
+      boards={boards ?? []}
+      boardsError={boardsError}
+      notice={notice}
+      onDismissNotice={() => setNotice(null)}
+      onSwitchBoard={switchBoard}
+      onCreateBoard={handleCreateBoard}
+      onDeleteBoard={handleDeleteBoard}
+    />
+  );
 }
 
 function Board({
   user,
   token,
   onSignOut,
+  onAuthFailed,
+  boardId,
+  boards,
+  boardsError,
+  notice,
+  onDismissNotice,
+  onSwitchBoard,
+  onCreateBoard,
+  onDeleteBoard,
 }: {
-  user: DemoUser;
+  user: SessionUser;
   token: string;
   onSignOut: () => void;
+  onAuthFailed: () => void;
+  boardId: string;
+  boards: BoardMeta[];
+  boardsError: string | null;
+  notice: string | null;
+  onDismissNotice: () => void;
+  onSwitchBoard: (boardId: string) => void;
+  onCreateBoard: (name: string) => Promise<boolean>;
+  onDeleteBoard: (board: BoardMeta) => Promise<void>;
 }) {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [authError, setAuthError] = useState<string | null>(null);
+  // The new-board form in the board switcher: whether it is
+  // open, the name typed so far, and whether a create is in
+  // flight. This is per-board view state, so it resets when the
+  // board switches — the form never survives a switch.
+  const [showNewBoardForm, setShowNewBoardForm] = useState(false);
+  const [newBoardName, setNewBoardName] = useState("");
+  const [creatingBoard, setCreatingBoard] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
+  // The shapes on the board, from the shared "shapes" map —
+  // rectangles, ellipses, lines, and pen strokes.
+  const [shapes, setShapes] = useState<Shape[]>([]);
+  // The text boxes on the board, from the shared "texts" map —
+  // free-floating text with no background, unlike notes.
+  const [texts, setTexts] = useState<TextBox[]>([]);
+  // The active tool. Select is the default; Escape returns here.
+  const [tool, setTool] = useState<Tool>("select");
   // Everyone else on the board, from Awareness. Our own presence
   // lives in localPresenceRef — the bar and cursors only show
   // other people.
   const [presence, setPresence] = useState<PresenceUser[]>([]);
   // The note this user clicked. null means nothing selected.
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  // The shape this user clicked. A note, a shape, and a text box
+  // are never selected at the same time — selecting one clears
+  // the others.
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+  // The text box this user clicked.
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   // The color new notes get, and the color the picker shows as
   // active. Picking a color also recolors the selected note.
   const [pickedColor, setPickedColor] = useState<NoteColor>("yellow");
+  // The font size new text boxes get. Picking a size also
+  // resizes the text in the selected text box.
+  const [pickedFontSize, setPickedFontSize] = useState<TextFontSize>("medium");
+  // The text box to focus after it appears (a newly placed box
+  // gets the keyboard right away, so the user can just type).
+  const [focusTextId, setFocusTextId] = useState<string | null>(null);
+  // Which text box the focus effect already focused. Remembering
+  // it in a ref (instead of clearing focusTextId in the effect)
+  // keeps later text edits from stealing focus back to the box.
+  const focusedTextIdRef = useRef<string | null>(null);
+  // The last import/export note for the user — an error when a
+  // file could not be imported, a confirmation when one was.
+  const [importMessage, setImportMessage] = useState<string | null>(null);
   // Whether the local UndoManager has anything to undo or redo.
   // Updated whenever the undo stack changes.
   const [canUndo, setCanUndo] = useState(false);
@@ -213,18 +635,25 @@ function Board({
   const localOrigin = `local-user-${user.id}`;
   const docRef = useRef<Y.Doc | null>(null);
   const notesMapRef = useRef<Y.Map<NoteMap> | null>(null);
+  const shapesMapRef = useRef<Y.Map<ShapeMap> | null>(null);
+  const textsMapRef = useRef<Y.Map<TextMap> | null>(null);
+  // The hidden file input for Import JSON — the toolbar button
+  // opens it, and the change handler reads the picked file.
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   // The provider's Awareness instance (null only if the provider
   // was created with awareness disabled — we never do that).
   const awarenessRef = useRef<HocuspocusProvider["awareness"]>(null);
-  // Our own presence: cursor position and selected notes. Kept in
-  // a ref because it changes on every mouse move and must not
-  // re-render the board each time.
+  // Our own presence: cursor position and selected notes,
+  // shapes, and text boxes. Kept in a ref because it changes on
+  // every mouse move and must not re-render the board each time.
   const localPresenceRef = useRef<PresenceUser>({
     id: user.id,
     name: user.name,
     color: user.color,
     cursor: null,
     selectedNoteIds: [],
+    selectedShapeIds: [],
+    selectedTextIds: [],
   });
   // When the last cursor position was sent, for the ~30/s throttle.
   const lastCursorSentRef = useRef(0);
@@ -264,9 +693,59 @@ function Board({
     noteW: number;
     noteH: number;
   } | null>(null);
+  // The shape drag in progress, if any — same shape as a note drag.
+  const shapeDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    shapeX: number;
+    shapeY: number;
+  } | null>(null);
+  // The shape resize in progress, if any — same shape as the drag.
+  const shapeResizeRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    shapeW: number;
+    shapeH: number;
+  } | null>(null);
+  // The text-box drag in progress, if any — same shape as a
+  // note drag.
+  const textDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    textX: number;
+    textY: number;
+  } | null>(null);
+  // The text-box resize in progress, if any — same shape as the
+  // drag.
+  const textResizeRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    textW: number;
+    textH: number;
+  } | null>(null);
+  // The shape being drawn on empty canvas, if any. For a pen
+  // stroke, points holds every point so far, so the bounding box
+  // can be recomputed as the stroke grows.
+  const drawRef = useRef<{
+    kind: ShapeKind;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    shapeId: string;
+    points: ShapePoint[];
+  } | null>(null);
   // The per-user UndoManager: it tracks only changes stamped
-  // with localOrigin, on the shared notes map and its children
-  // (nested note maps and their Y.Text).
+  // with localOrigin, on the shared notes and shapes maps and
+  // their children (nested note maps and their Y.Text, shape maps
+  // and their pen-point arrays).
   const undoManagerRef = useRef<Y.UndoManager | null>(null);
 
   useEffect(() => {
@@ -279,24 +758,37 @@ function Board({
     // onAuthenticate.
     const provider = new HocuspocusProvider({
       url: SYNC_URL,
-      name: ROOM_NAME,
+      name: boardId,
       document: doc,
       token,
       // BroadcastChannel would sync tabs directly, bypassing the
       // server — disabled so the two-tab test proves server sync.
       broadcast: false,
       onStatus: ({ status: next }) => setStatus(toConnectionStatus(next)),
-      onAuthenticationFailed: ({ reason }) => setAuthError(reason),
+      // The server rejected the token — it expired, or the
+      // database was reset. Drop the session and show the auth
+      // screen, instead of sitting on a board that can never
+      // connect.
+      onAuthenticationFailed: ({ reason }) => {
+        setAuthError(reason);
+        onAuthFailed();
+      },
     });
     const notesMap = doc.getMap<NoteMap>("notes");
     docRef.current = doc;
     notesMapRef.current = notesMap;
+    const shapesMap = doc.getMap<ShapeMap>("shapes");
+    shapesMapRef.current = shapesMap;
+    const textsMap = doc.getMap<TextMap>("texts");
+    textsMapRef.current = textsMap;
 
     // Per-user undo: the manager only tracks transactions stamped
     // with our own origin, so another user's edits never land on
-    // our undo stack. Drags and typing batch into one step while
-    // they keep coming within the capture timeout (500 ms).
-    const undoManager = new Y.UndoManager(notesMap, {
+    // our undo stack. It watches all three shared roots — notes,
+    // shapes, and text boxes — so one undo stack covers all of
+    // them. Drags and typing batch into one step while they keep
+    // coming within the capture timeout (500 ms).
+    const undoManager = new Y.UndoManager([notesMap, shapesMap, textsMap], {
       trackedOrigins: new Set([localOrigin]),
     });
     undoManagerRef.current = undoManager;
@@ -320,6 +812,30 @@ function Board({
 
     notesMap.observeDeep(snapshot);
     snapshot();
+
+    // Re-reads every shape from the shared document into React
+    // state. observeDeep fires for shape moves, resizes, color
+    // changes, and pen points alike.
+    function snapshotShapes(): void {
+      const next: Shape[] = [];
+      shapesMap.forEach((shapeMap, id) => next.push(readShape(id, shapeMap)));
+      setShapes(next);
+    }
+
+    shapesMap.observeDeep(snapshotShapes);
+    snapshotShapes();
+
+    // Re-reads every text box from the shared document into React
+    // state. observeDeep fires for text-box moves, resizes, color
+    // and size changes, and text edits alike.
+    function snapshotTexts(): void {
+      const next: TextBox[] = [];
+      textsMap.forEach((textMap, id) => next.push(readTextBox(id, textMap)));
+      setTexts(next);
+    }
+
+    textsMap.observeDeep(snapshotTexts);
+    snapshotTexts();
 
     // Presence: this client publishes its own cursor and selection
     // through Awareness, and reads everyone else's from the same
@@ -359,12 +875,33 @@ function Board({
       awareness?.off("change", refreshPresence);
       awarenessRef.current = null;
       notesMap.unobserveDeep(snapshot);
+      shapesMap.unobserveDeep(snapshotShapes);
+      textsMap.unobserveDeep(snapshotTexts);
       provider.destroy();
       doc.destroy();
       docRef.current = null;
       notesMapRef.current = null;
+      shapesMapRef.current = null;
+      textsMapRef.current = null;
     };
-  }, [token]);
+  }, [token, boardId, localOrigin, onAuthFailed]);
+
+  // Focuses a newly placed text box once it has rendered, so
+  // the user can type straight away without clicking it first.
+  // If the box has not rendered yet, the id stays pending and
+  // the effect retries when the text boxes update — clearing it
+  // early would lose the focus entirely. The focused id is
+  // remembered in a ref, not cleared with setState, because
+  // calling setState inside an effect causes a cascading render.
+  useEffect(() => {
+    if (!focusTextId || focusedTextIdRef.current === focusTextId) return;
+    const box = document.querySelector(
+      `.text-box[data-text-id="${focusTextId}"] textarea`,
+    ) as HTMLTextAreaElement | null;
+    if (!box) return;
+    box.focus();
+    focusedTextIdRef.current = focusTextId;
+  }, [focusTextId, texts]);
 
   // Starts a drag from a note's handle. The textarea underneath
   // stays free for text editing — only the handle drags.
@@ -492,6 +1029,10 @@ function Board({
   // else, at most once per throttle window.
   function trackCursor(event: React.PointerEvent<HTMLDivElement>): void {
     if (!awarenessRef.current) return;
+    // Reading the clock here is the cursor throttle, and this is
+    // a pointer-event handler, not render — it only runs when the
+    // pointer actually moves.
+    // eslint-disable-next-line react-hooks/purity
     const now = performance.now();
     if (now - lastCursorSentRef.current < CURSOR_THROTTLE_MS) return;
     lastCursorSentRef.current = now;
@@ -516,22 +1057,45 @@ function Board({
 
   // Sets the selection in state and in Awareness at once, so
   // the outline, the presence bar, and other users stay in sync.
-  function setSelection(noteId: string | null): void {
+  // A note, a shape, and a text box are never selected together.
+  function setSelection(noteId: string | null, shapeId: string | null, textId: string | null = null): void {
     setSelectedNoteId(noteId);
+    setSelectedShapeId(shapeId);
+    setSelectedTextId(textId);
     localPresenceRef.current.selectedNoteIds = noteId ? [noteId] : [];
+    localPresenceRef.current.selectedShapeIds = shapeId ? [shapeId] : [];
+    localPresenceRef.current.selectedTextIds = textId ? [textId] : [];
     publishPresence();
   }
 
   // Clicking a note selects it, and tells everyone else.
   function selectNote(noteId: string): void {
     if (selectedNoteId === noteId) return;
-    setSelection(noteId);
+    setSelection(noteId, null);
+  }
+
+  // Clicking a shape selects it, and tells everyone else.
+  function selectShape(shapeId: string): void {
+    if (selectedShapeId === shapeId) return;
+    setSelection(null, shapeId);
+  }
+
+  // Clicking a text box selects it, and tells everyone else.
+  function selectTextBox(textId: string): void {
+    if (selectedTextId === textId) return;
+    setSelection(null, null, textId);
   }
 
   // Clicking empty board clears the selection.
   function clearSelection(): void {
-    if (localPresenceRef.current.selectedNoteIds.length === 0) return;
-    setSelection(null);
+    if (
+      localPresenceRef.current.selectedNoteIds.length === 0 &&
+      localPresenceRef.current.selectedShapeIds.length === 0 &&
+      localPresenceRef.current.selectedTextIds.length === 0
+    ) {
+      return;
+    }
+    setSelection(null, null);
   }
 
   function changeNoteText(noteId: string, next: string): void {
@@ -578,9 +1142,11 @@ function Board({
   }
 
   // Double-clicking empty canvas creates a note centered on the
-  // click. A double-click on a note does nothing — its target is
-  // the note, not the board or the canvas background.
+  // click — but only in Select mode. With a shape tool active, a
+  // double-click is two draws, not a note; with the Note tool, a
+  // single click already creates one.
   function createNoteAtPoint(event: React.MouseEvent<HTMLDivElement>): void {
+    if (tool !== "select") return;
     if (event.target !== event.currentTarget && event.target !== canvasRef.current) return;
     const point = toBoardCoords(event.clientX, event.clientY);
     createNote(
@@ -602,11 +1168,13 @@ function Board({
     }, localOrigin);
   }
 
-  // Picks the color for new notes — and recolors the selected
-  // note right away, if there is one.
+  // Picks the color for new notes and shapes — and recolors the
+  // selected note, shape, or text box right away, if there is one.
   function pickColor(color: NoteColor): void {
     setPickedColor(color);
     if (selectedNoteId) recolorNote(selectedNoteId, color);
+    if (selectedShapeId) recolorShape(selectedShapeId, color);
+    if (selectedTextId) recolorTextBox(selectedTextId, color);
   }
 
   // Removes a note from the shared map, so it disappears in every
@@ -619,7 +1187,384 @@ function Board({
       notesMap.delete(noteId);
     }, localOrigin);
     if (localPresenceRef.current.selectedNoteIds.includes(noteId)) {
-      setSelection(null);
+      setSelection(null, null);
+    }
+  }
+
+  // Creates a text box centered on the given board position, in
+  // the picked color and size, selects it, and focuses it so the
+  // user can type right away. The tool goes back to Select, so
+  // the next click drags or edits instead of placing another box.
+  function createTextBoxAtPoint(x: number, y: number): void {
+    const doc = docRef.current;
+    const textsMap = textsMapRef.current;
+    if (!doc || !textsMap) return;
+    const id = crypto.randomUUID();
+    const textBox = createTextBox(
+      id,
+      Math.max(0, Math.round(x - DEFAULT_TEXT_SIZE.w / 2)),
+      Math.max(0, Math.round(y - DEFAULT_TEXT_SIZE.h / 2)),
+      DEFAULT_TEXT_SIZE.w,
+      DEFAULT_TEXT_SIZE.h,
+      pickedFontSize,
+      pickedColor,
+    );
+    doc.transact(() => {
+      textsMap.set(id, buildTextMap(textBox));
+    }, localOrigin);
+    selectTextBox(id);
+    setFocusTextId(id);
+    setTool("select");
+  }
+
+  function changeTextBoxText(textId: string, next: string): void {
+    const doc = docRef.current;
+    const textsMap = textsMapRef.current;
+    if (!doc || !textsMap) return;
+    const textMap = textsMap.get(textId);
+    const text = textMap?.get("text");
+    if (!textMap || !(text instanceof Y.Text)) return;
+    // The same prefix/suffix diff as notes: only the changed part
+    // is replaced, so two people typing at once keep each other's
+    // words.
+    updateNoteText(doc, text, next, localOrigin);
+  }
+
+  // Recolors one text box. The change syncs to every tab like
+  // any other edit, and undo reverts it.
+  function recolorTextBox(textId: string, color: NoteColor): void {
+    const doc = docRef.current;
+    const textsMap = textsMapRef.current;
+    if (!doc || !textsMap) return;
+    const textMap = textsMap.get(textId);
+    if (!textMap) return;
+    doc.transact(() => {
+      textMap.set("color", color);
+    }, localOrigin);
+  }
+
+  // Picks the font size for new text boxes — and resizes the text
+  // in the selected text box right away, if there is one.
+  function pickFontSize(fontSize: TextFontSize): void {
+    setPickedFontSize(fontSize);
+    if (!selectedTextId) return;
+    const doc = docRef.current;
+    const textsMap = textsMapRef.current;
+    if (!doc || !textsMap) return;
+    const textMap = textsMap.get(selectedTextId);
+    if (!textMap) return;
+    doc.transact(() => {
+      setTextFontSize(textMap, fontSize);
+    }, localOrigin);
+  }
+
+  // Removes a text box from the shared map, so it disappears in
+  // every tab. If it was the selected text box, the selection
+  // clears too.
+  function deleteTextBox(textId: string): void {
+    const doc = docRef.current;
+    const textsMap = textsMapRef.current;
+    if (!doc || !textsMap || !textsMap.has(textId)) return;
+    doc.transact(() => {
+      textsMap.delete(textId);
+    }, localOrigin);
+    if (localPresenceRef.current.selectedTextIds.includes(textId)) {
+      setSelection(null, null);
+    }
+  }
+
+  // Starts a drag from a text box's handle. The textarea
+  // underneath stays free for text editing — only the handle drags.
+  function startTextDrag(event: React.PointerEvent<HTMLDivElement>, textBox: TextBox): void {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    textDragRef.current = {
+      id: textBox.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      textX: textBox.x,
+      textY: textBox.y,
+    };
+  }
+
+  function moveTextDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    const drag = textDragRef.current;
+    const doc = docRef.current;
+    const textsMap = textsMapRef.current;
+    if (!drag || !doc || !textsMap || event.pointerId !== drag.pointerId) return;
+    const textMap = textsMap.get(drag.id);
+    if (!textMap) return;
+    // Screen pixels become board pixels by dividing by the zoom —
+    // at 200% a 20px mouse move is only 10 board pixels.
+    const nextX = Math.max(0, drag.textX + (event.clientX - drag.startX) / zoom);
+    const nextY = Math.max(0, drag.textY + (event.clientY - drag.startY) / zoom);
+    // Same batching as a note drag: the whole drag lands on one
+    // undo step.
+    doc.transact(() => {
+      textMap.set("x", Math.round(nextX));
+      textMap.set("y", Math.round(nextY));
+    }, localOrigin);
+  }
+
+  function endTextDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (textDragRef.current?.pointerId === event.pointerId) {
+      textDragRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Starts a resize from the text box's bottom-right handle.
+  function startTextResize(event: React.PointerEvent<HTMLDivElement>, textBox: TextBox): void {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    textResizeRef.current = {
+      id: textBox.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      textW: textBox.w,
+      textH: textBox.h,
+    };
+  }
+
+  function moveTextResize(event: React.PointerEvent<HTMLDivElement>): void {
+    const resize = textResizeRef.current;
+    const doc = docRef.current;
+    const textsMap = textsMapRef.current;
+    if (!resize || !doc || !textsMap || event.pointerId !== resize.pointerId) return;
+    const textMap = textsMap.get(resize.id);
+    if (!textMap) return;
+    const nextW = Math.max(
+      MIN_TEXT_SIZE.w,
+      resize.textW + (event.clientX - resize.startX) / zoom,
+    );
+    const nextH = Math.max(
+      MIN_TEXT_SIZE.h,
+      resize.textH + (event.clientY - resize.startY) / zoom,
+    );
+    // Same batching as a drag: rapid moves merge into one undo step.
+    doc.transact(() => {
+      textMap.set("w", Math.round(nextW));
+      textMap.set("h", Math.round(nextH));
+    }, localOrigin);
+  }
+
+  function endTextResize(event: React.PointerEvent<HTMLDivElement>): void {
+    if (textResizeRef.current?.pointerId === event.pointerId) {
+      textResizeRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Creates a shape at the given board position, in the picked
+  // color, and selects it so the user can drag or recolor it
+  // right away. A pen stroke starts with one point at the click;
+  // other shapes start at the minimum size and grow with the drag.
+  function createShapeAtPoint(kind: ShapeKind, x: number, y: number): string {
+    const doc = docRef.current;
+    const shapesMap = shapesMapRef.current;
+    if (!doc || !shapesMap) return "";
+    const id = crypto.randomUUID();
+    const shape = createShape(
+      id,
+      kind,
+      Math.round(x),
+      Math.round(y),
+      kind === "pen" ? 1 : MIN_SHAPE_SIZE,
+      kind === "pen" ? 1 : MIN_SHAPE_SIZE,
+      pickedColor,
+      kind === "pen" ? [{ x: Math.round(x), y: Math.round(y) }] : [],
+    );
+    doc.transact(() => {
+      shapesMap.set(id, buildShapeMap(shape));
+    }, localOrigin);
+    selectShape(id);
+    return id;
+  }
+
+  // Starts drawing a shape on empty canvas. The shape is created
+  // right away, so the other tab sees it appear as soon as the
+  // drag starts — and a pen stroke grows live as it is drawn.
+  function startDraw(event: React.PointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return;
+    if (tool !== "rect" && tool !== "ellipse" && tool !== "line" && tool !== "pen") return;
+    const point = toBoardCoords(event.clientX, event.clientY);
+    const id = createShapeAtPoint(tool, point.x, point.y);
+    if (!id) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drawRef.current = {
+      kind: tool,
+      pointerId: event.pointerId,
+      startX: point.x,
+      startY: point.y,
+      shapeId: id,
+      points: tool === "pen" ? [{ x: Math.round(point.x), y: Math.round(point.y) }] : [],
+    };
+  }
+
+  function moveDraw(event: React.PointerEvent<HTMLDivElement>): void {
+    const draw = drawRef.current;
+    const doc = docRef.current;
+    const shapesMap = shapesMapRef.current;
+    if (!draw || !doc || !shapesMap || event.pointerId !== draw.pointerId) return;
+    const shapeMap = shapesMap.get(draw.shapeId);
+    if (!shapeMap) return;
+    const point = toBoardCoords(event.clientX, event.clientY);
+    if (draw.kind === "pen") {
+      // Skip a point identical to the last one — a pause mid-stroke
+      // should not fill the stroke with duplicate points.
+      const last = draw.points[draw.points.length - 1];
+      const nextPoint = { x: Math.round(point.x), y: Math.round(point.y) };
+      if (last && last.x === nextPoint.x && last.y === nextPoint.y) return;
+      draw.points.push(nextPoint);
+      const box = shapeBoxFromPoints(draw.points);
+      if (!box) return;
+      // Stamped with our origin so undo can revert this stroke —
+      // and only this user's strokes. Pointermove fires faster
+      // than the capture timeout, so the whole stroke lands on
+      // one undo step.
+      doc.transact(() => {
+        appendPenPoint(shapeMap, nextPoint);
+        shapeMap.set("x", box.x);
+        shapeMap.set("y", box.y);
+        shapeMap.set("w", box.w);
+        shapeMap.set("h", box.h);
+      }, localOrigin);
+      return;
+    }
+    // A drag in any direction defines the box, so dragging up or
+    // left grows the shape the other way instead of shrinking it.
+    const box = normalizeShapeBox(draw.startX, draw.startY, point.x, point.y);
+    doc.transact(() => {
+      shapeMap.set("x", box.x);
+      shapeMap.set("y", box.y);
+      shapeMap.set("w", box.w);
+      shapeMap.set("h", box.h);
+    }, localOrigin);
+  }
+
+  function endDraw(event: React.PointerEvent<HTMLDivElement>): void {
+    if (drawRef.current?.pointerId === event.pointerId) {
+      drawRef.current = null;
+      // The next change starts a fresh undo step instead of
+      // joining the shape we just drew.
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Recolors one shape. The change syncs to every tab like any
+  // other edit, and undo reverts it.
+  function recolorShape(shapeId: string, color: NoteColor): void {
+    const doc = docRef.current;
+    const shapesMap = shapesMapRef.current;
+    if (!doc || !shapesMap) return;
+    const shapeMap = shapesMap.get(shapeId);
+    if (!shapeMap) return;
+    doc.transact(() => {
+      shapeMap.set("color", color);
+    }, localOrigin);
+  }
+
+  // Removes a shape from the shared map, so it disappears in every
+  // tab. If it was the selected shape, the selection clears too.
+  function deleteShape(shapeId: string): void {
+    const doc = docRef.current;
+    const shapesMap = shapesMapRef.current;
+    if (!doc || !shapesMap || !shapesMap.has(shapeId)) return;
+    doc.transact(() => {
+      shapesMap.delete(shapeId);
+    }, localOrigin);
+    if (localPresenceRef.current.selectedShapeIds.includes(shapeId)) {
+      setSelection(null, null);
+    }
+  }
+
+  // Starts a drag from a shape. The whole shape is the handle —
+  // there is no text to edit, so the entire shape grabs.
+  function startShapeDrag(event: React.PointerEvent<HTMLDivElement>, shape: Shape): void {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    shapeDragRef.current = {
+      id: shape.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      shapeX: shape.x,
+      shapeY: shape.y,
+    };
+  }
+
+  function moveShapeDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    const drag = shapeDragRef.current;
+    const doc = docRef.current;
+    const shapesMap = shapesMapRef.current;
+    if (!drag || !doc || !shapesMap || event.pointerId !== drag.pointerId) return;
+    const shapeMap = shapesMap.get(drag.id);
+    if (!shapeMap) return;
+    // Screen pixels become board pixels by dividing by the zoom —
+    // at 200% a 20px mouse move is only 10 board pixels.
+    const nextX = Math.max(0, drag.shapeX + (event.clientX - drag.startX) / zoom);
+    const nextY = Math.max(0, drag.shapeY + (event.clientY - drag.startY) / zoom);
+    // Same batching as a note drag: the whole drag lands on one
+    // undo step.
+    doc.transact(() => {
+      shapeMap.set("x", Math.round(nextX));
+      shapeMap.set("y", Math.round(nextY));
+    }, localOrigin);
+  }
+
+  function endShapeDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (shapeDragRef.current?.pointerId === event.pointerId) {
+      shapeDragRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Starts a resize from the shape's bottom-right handle. Pen
+  // strokes have no handle — resizing one would stretch its
+  // points out of shape, so pen shapes move and delete but do
+  // not resize.
+  function startShapeResize(event: React.PointerEvent<HTMLDivElement>, shape: Shape): void {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    shapeResizeRef.current = {
+      id: shape.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      shapeW: shape.w,
+      shapeH: shape.h,
+    };
+  }
+
+  function moveShapeResize(event: React.PointerEvent<HTMLDivElement>): void {
+    const resize = shapeResizeRef.current;
+    const doc = docRef.current;
+    const shapesMap = shapesMapRef.current;
+    if (!resize || !doc || !shapesMap || event.pointerId !== resize.pointerId) return;
+    const shapeMap = shapesMap.get(resize.id);
+    if (!shapeMap) return;
+    const nextW = Math.max(
+      MIN_SHAPE_SIZE,
+      resize.shapeW + (event.clientX - resize.startX) / zoom,
+    );
+    const nextH = Math.max(
+      MIN_SHAPE_SIZE,
+      resize.shapeH + (event.clientY - resize.startY) / zoom,
+    );
+    // Same batching as a drag: rapid moves merge into one undo step.
+    doc.transact(() => {
+      shapeMap.set("w", Math.round(nextW));
+      shapeMap.set("h", Math.round(nextH));
+    }, localOrigin);
+  }
+
+  function endShapeResize(event: React.PointerEvent<HTMLDivElement>): void {
+    if (shapeResizeRef.current?.pointerId === event.pointerId) {
+      shapeResizeRef.current = null;
+      undoManagerRef.current?.stopCapturing();
     }
   }
 
@@ -685,9 +1630,96 @@ function Board({
     manager.redo();
   }
 
+  // Downloads the board as a PNG image, rendered from the synced
+  // board state (see export.ts for why it is drawn, not screenshotted).
+  function exportPng(): void {
+    const canvas = renderBoardToCanvas(notes, shapes, texts);
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        setImportMessage("Could not make a PNG from this board.");
+        return;
+      }
+      downloadBlob(`syncboard-${boardId}.png`, blob);
+      setImportMessage(null);
+    }, "image/png");
+  }
+
+  // Downloads the whole board — notes, shapes, and text boxes —
+  // as a JSON file, so it can be saved or moved to another board.
+  function exportJson(): void {
+    const data: BoardExport = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      boardId,
+      notes,
+      shapes,
+      texts,
+    };
+    downloadBlob(
+      `syncboard-${boardId}.json`,
+      new Blob([boardExportToJson(data)], { type: "application/json" }),
+    );
+    setImportMessage(null);
+  }
+
+  // Reads a picked JSON file and replaces the board with it. The
+  // confirm step comes first: replacing wipes the board (one undo
+  // brings it all back, and the change syncs to everyone).
+  async function importJsonFile(file: File): Promise<void> {
+    let json: string;
+    try {
+      json = await file.text();
+    } catch {
+      setImportMessage("Could not read that file — nothing was changed.");
+      return;
+    }
+    const parsed = parseBoardExport(json);
+    if (!parsed) {
+      setImportMessage("That file is not a SyncBoard export — nothing was changed.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Replace this board with "${file.name}"? It has ${parsed.notes.length} notes, ` +
+          `${parsed.shapes.length} shapes, and ${parsed.texts.length} text boxes. ` +
+          `Everything on this board now will be gone — press Ctrl+Z to undo the import.`,
+      )
+    ) {
+      return;
+    }
+    const doc = docRef.current;
+    if (!doc) return;
+    applyBoardExport(doc, parsed, localOrigin);
+    setSelection(null, null);
+    setImportMessage(
+      `Imported ${parsed.notes.length} notes, ${parsed.shapes.length} shapes, ` +
+        `and ${parsed.texts.length} text boxes from "${file.name}".`,
+    );
+  }
+
+  // Creates the board from the switcher form and opens it. The
+  // form only closes on success, so a failed create leaves the
+  // typed name in place for another try.
+  async function submitNewBoard(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    const name = newBoardName.trim();
+    if (!name) return;
+    setCreatingBoard(true);
+    try {
+      const created = await onCreateBoard(name);
+      if (created) {
+        setNewBoardName("");
+        setShowNewBoardForm(false);
+      }
+    } finally {
+      setCreatingBoard(false);
+    }
+  }
+
   // Keyboard shortcuts: Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo,
-  // Delete / Backspace deletes the selected note. Delete only
-  // fires when the user is not typing in a note's textarea.
+  // Delete / Backspace deletes the selected note or shape, Escape
+  // returns to the Select tool. Delete only fires when the user
+  // is not typing in a note's textarea.
   // Ctrl+Z is caught even while typing: the textarea is controlled
   // by the shared document, so the browser's native text undo
   // would fight React — the UndoManager is the one that works.
@@ -699,6 +1731,10 @@ function Board({
         (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
       const mod = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
+      if (event.key === "Escape") {
+        setTool("select");
+        return;
+      }
       if (mod && !event.shiftKey && key === "z") {
         event.preventDefault();
         undo();
@@ -710,10 +1746,18 @@ function Board({
         return;
       }
       if (!editingText && (event.key === "Delete" || event.key === "Backspace")) {
-        const selectedId = localPresenceRef.current.selectedNoteIds[0];
-        if (selectedId) {
+        const selectedNote = localPresenceRef.current.selectedNoteIds[0];
+        const selectedShape = localPresenceRef.current.selectedShapeIds[0];
+        const selectedText = localPresenceRef.current.selectedTextIds[0];
+        if (selectedNote) {
           event.preventDefault();
-          deleteNote(selectedId);
+          deleteNote(selectedNote);
+        } else if (selectedShape) {
+          event.preventDefault();
+          deleteShape(selectedShape);
+        } else if (selectedText) {
+          event.preventDefault();
+          deleteTextBox(selectedText);
         }
       }
     }
@@ -722,6 +1766,7 @@ function Board({
     // The handlers only touch refs and state setters, so binding
     // once is safe — the selection is read from the presence ref,
     // not from state, so it is never stale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Who selected each note, local user included, so the outline
@@ -739,10 +1784,58 @@ function Board({
       color: user.color,
       cursor: null,
       selectedNoteIds: [selectedNoteId],
+      selectedShapeIds: [],
+      selectedTextIds: [],
     });
   }
   for (const person of presence) {
     for (const noteId of person.selectedNoteIds) addSelector(noteId, person);
+  }
+
+  // Who selected each shape, local user included, so the outline
+  // and label can show every selector at once — same as notes.
+  const selectorsByShape = new Map<string, PresenceUser[]>();
+  function addShapeSelector(shapeId: string, person: PresenceUser): void {
+    const list = selectorsByShape.get(shapeId) ?? [];
+    list.push(person);
+    selectorsByShape.set(shapeId, list);
+  }
+  if (selectedShapeId) {
+    addShapeSelector(selectedShapeId, {
+      id: user.id,
+      name: user.name,
+      color: user.color,
+      cursor: null,
+      selectedNoteIds: [],
+      selectedShapeIds: [selectedShapeId],
+      selectedTextIds: [],
+    });
+  }
+  for (const person of presence) {
+    for (const shapeId of person.selectedShapeIds) addShapeSelector(shapeId, person);
+  }
+
+  // Who selected each text box, local user included — same as
+  // notes and shapes.
+  const selectorsByText = new Map<string, PresenceUser[]>();
+  function addTextSelector(textId: string, person: PresenceUser): void {
+    const list = selectorsByText.get(textId) ?? [];
+    list.push(person);
+    selectorsByText.set(textId, list);
+  }
+  if (selectedTextId) {
+    addTextSelector(selectedTextId, {
+      id: user.id,
+      name: user.name,
+      color: user.color,
+      cursor: null,
+      selectedNoteIds: [],
+      selectedShapeIds: [],
+      selectedTextIds: [selectedTextId],
+    });
+  }
+  for (const person of presence) {
+    for (const textId of person.selectedTextIds) addTextSelector(textId, person);
   }
 
   return (
@@ -765,6 +1858,79 @@ function Board({
           Sign out
         </button>
       </header>
+      <div className="boards-bar" aria-label="Boards">
+        {boards.map((board) => (
+          <span
+            key={board.id}
+            className={`board-tab${board.id === boardId ? " active" : ""}`}
+          >
+            <button
+              type="button"
+              className="board-tab-button"
+              onClick={() => onSwitchBoard(board.id)}
+              aria-current={board.id === boardId ? "true" : undefined}
+            >
+              {board.name}
+            </button>
+            {canDeleteBoard(board.id) && (
+              <button
+                type="button"
+                className="board-tab-delete"
+                onClick={() => void onDeleteBoard(board)}
+                aria-label={`Delete board ${board.name}`}
+                title={`Delete ${board.name}`}
+              >
+                ×
+              </button>
+            )}
+          </span>
+        ))}
+        {showNewBoardForm ? (
+          <form className="board-new-form" onSubmit={(event) => void submitNewBoard(event)}>
+            <input
+              aria-label="New board name"
+              value={newBoardName}
+              onChange={(event) => setNewBoardName(event.target.value)}
+              placeholder="Board name"
+              autoFocus
+              maxLength={100}
+            />
+            <button type="submit" disabled={creatingBoard || newBoardName.trim() === ""}>
+              Create board
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowNewBoardForm(false);
+                setNewBoardName("");
+              }}
+            >
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="board-new-button"
+            onClick={() => setShowNewBoardForm(true)}
+          >
+            + New board
+          </button>
+        )}
+      </div>
+      {notice && (
+        <p className="board-notice" role="status">
+          {notice}{" "}
+          <button type="button" onClick={onDismissNotice}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      {boardsError && (
+        <p className="board-error" role="alert">
+          {boardsError}
+        </p>
+      )}
       <div className="presence-bar" aria-label="People on this board">
         <span className="presence-count">{presence.length + 1} online</span>
         <PresenceChip person={user} you />
@@ -777,7 +1943,30 @@ function Board({
           + Note
         </button>
         <span className="toolbar-divider" aria-hidden="true" />
-        <div className="color-picker" role="group" aria-label="Note color">
+        <div className="tool-picker" role="group" aria-label="Drawing tools">
+          {TOOLS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`toolbar-button tool-button${tool === item.id ? " active" : ""}`}
+              onClick={() => setTool(item.id)}
+              aria-pressed={tool === item.id}
+              title={
+                item.id === "select"
+                  ? "Select and move things (Escape)"
+                  : item.id === "note"
+                    ? "Click empty canvas to add a note"
+                    : item.id === "text"
+                      ? "Click empty canvas to add a text box"
+                      : `Drag on empty canvas to draw a ${item.label.toLowerCase()}`
+              }
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <span className="toolbar-divider" aria-hidden="true" />
+        <div className="color-picker" role="group" aria-label="Note and shape color">
           {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
             <button
               key={color}
@@ -788,6 +1977,22 @@ function Board({
               aria-label={`${color} note`}
               aria-pressed={color === pickedColor}
             />
+          ))}
+        </div>
+        <span className="toolbar-divider" aria-hidden="true" />
+        <div className="font-size-picker" role="group" aria-label="Text size">
+          {TEXT_FONT_SIZES.map((size) => (
+            <button
+              key={size}
+              type="button"
+              className={`toolbar-button font-size-button${pickedFontSize === size ? " active" : ""}`}
+              onClick={() => pickFontSize(size)}
+              aria-pressed={pickedFontSize === size}
+              aria-label={`${size} text`}
+              title={`${size[0].toUpperCase()}${size.slice(1)} text (${FONT_SIZE_PX[size]}px)`}
+            >
+              {size === "small" ? "S" : size === "medium" ? "M" : "L"}
+            </button>
           ))}
         </div>
         <span className="toolbar-divider" aria-hidden="true" />
@@ -809,6 +2014,46 @@ function Board({
         >
           Redo
         </button>
+        <span className="toolbar-divider" aria-hidden="true" />
+        <div className="export-controls" role="group" aria-label="Export and import">
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={exportPng}
+            title="Download the board as a PNG image"
+          >
+            Export PNG
+          </button>
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={exportJson}
+            title="Download the board as a JSON file"
+          >
+            Export JSON
+          </button>
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={() => importInputRef.current?.click()}
+            title="Replace this board with a board from a JSON file"
+          >
+            Import JSON
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            aria-label="Import a board JSON file"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              // Reset so picking the same file again still fires.
+              event.target.value = "";
+              if (file) void importJsonFile(file);
+            }}
+          />
+        </div>
         <span className="toolbar-divider" aria-hidden="true" />
         <div className="zoom-controls" role="group" aria-label="Zoom">
           <button
@@ -843,24 +2088,65 @@ function Board({
           </button>
         </div>
       </div>
+      {importMessage && (
+        <p className="board-notice" role="status">
+          {importMessage}{" "}
+          <button type="button" onClick={() => setImportMessage(null)}>
+            Dismiss
+          </button>
+        </p>
+      )}
       <div
-        className={`board${panning ? " panning" : ""}`}
+        className={`board${panning ? " panning" : ""}${tool !== "select" ? " drawing" : ""}`}
         ref={boardRef}
         onPointerMove={(event) => {
           trackCursor(event);
           movePan(event);
+          moveDraw(event);
+          moveTextDrag(event);
         }}
         onPointerLeave={clearCursor}
         onPointerDown={(event) => {
-          // A press on empty board (not on a note) clears the
-          // selection and starts a pan.
+          // A press on empty board (not on a note or shape).
           if (event.target === event.currentTarget || event.target === canvasRef.current) {
-            clearSelection();
-            startPan(event);
+            if (tool === "rect" || tool === "ellipse" || tool === "line" || tool === "pen") {
+              startDraw(event);
+            } else if (tool === "note") {
+              // Clicking empty canvas with the Note tool drops a
+              // note centered on the click.
+              const point = toBoardCoords(event.clientX, event.clientY);
+              createNote(
+                Math.max(0, point.x - DEFAULT_NOTE_SIZE.w / 2),
+                Math.max(0, point.y - DEFAULT_NOTE_SIZE.h / 2),
+              );
+            } else if (tool === "text") {
+              // Clicking empty canvas with the Text tool drops a
+              // text box centered on the click and focuses it.
+              // Canceling the press keeps its default focus change
+              // from blurring that textarea: the press lands on
+              // empty canvas, so the browser would otherwise move
+              // focus back to the board right after the box appears.
+              event.preventDefault();
+              const point = toBoardCoords(event.clientX, event.clientY);
+              createTextBoxAtPoint(point.x, point.y);
+            } else {
+              // Select mode: the press clears the selection and
+              // starts a pan.
+              clearSelection();
+              startPan(event);
+            }
           }
         }}
-        onPointerUp={endPan}
-        onPointerCancel={endPan}
+        onPointerUp={(event) => {
+          endPan(event);
+          endDraw(event);
+          endTextDrag(event);
+        }}
+        onPointerCancel={(event) => {
+          endPan(event);
+          endDraw(event);
+          endTextDrag(event);
+        }}
         onDoubleClick={createNoteAtPoint}
       >
         <div
@@ -868,6 +2154,130 @@ function Board({
           ref={canvasRef}
           style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
         >
+          {shapes.map((shape) => {
+            const selectors = selectorsByShape.get(shape.id) ?? [];
+            const stroke = SHAPE_STROKE_COLORS[shape.color];
+            // A zero-size box would collapse the SVG, so the
+            // rendered box is at least 1px in each direction.
+            const boxW = Math.max(1, shape.w);
+            const boxH = Math.max(1, shape.h);
+            return (
+              <div
+                key={shape.id}
+                className="shape"
+                data-shape-id={shape.id}
+                data-shape-kind={shape.kind}
+                onPointerDown={(event) => {
+                  if (tool !== "select" || event.button !== 0) return;
+                  selectShape(shape.id);
+                  startShapeDrag(event, shape);
+                }}
+                onPointerMove={moveShapeDrag}
+                onPointerUp={endShapeDrag}
+                style={{
+                  left: shape.x,
+                  top: shape.y,
+                  width: boxW,
+                  height: boxH,
+                  // A selected shape gets an outline in the first
+                  // selector's color, like a selected note.
+                  ...(selectors.length > 0
+                    ? { boxShadow: `0 0 0 2px ${selectors[0].color}` }
+                    : undefined),
+                  ...(shape.kind === "rect" || shape.kind === "ellipse"
+                    ? {
+                        background: NOTE_COLORS[shape.color],
+                        border: `2px solid ${stroke}`,
+                        borderRadius: shape.kind === "ellipse" ? "50%" : 8,
+                      }
+                    : undefined),
+                }}
+              >
+                {selectors.length > 0 && (
+                  <span
+                    className="shape-selector"
+                    style={{ background: selectors[0].color }}
+                  >
+                    {selectors.map((person) => person.name).join(", ")}
+                  </span>
+                )}
+                {shape.kind === "line" && (
+                  <svg
+                    className="shape-svg"
+                    width="100%"
+                    height="100%"
+                    viewBox={`0 0 ${boxW} ${boxH}`}
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                  >
+                    <defs>
+                      <marker
+                        id={`arrow-${shape.id}`}
+                        markerWidth="8"
+                        markerHeight="8"
+                        refX="6"
+                        refY="3"
+                        orient="auto"
+                      >
+                        <path d="M0,0 L0,6 L7,3 z" fill={stroke} />
+                      </marker>
+                    </defs>
+                    <line
+                      x1="2"
+                      y1="2"
+                      x2={boxW - 2}
+                      y2={boxH - 2}
+                      stroke={stroke}
+                      strokeWidth="3"
+                      markerEnd={`url(#arrow-${shape.id})`}
+                    />
+                  </svg>
+                )}
+                {shape.kind === "pen" && (
+                  <svg
+                    className="shape-svg"
+                    width="100%"
+                    height="100%"
+                    viewBox={`0 0 ${boxW} ${boxH}`}
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d={penPathFromPoints(shape.points, shape.x, shape.y)}
+                      stroke={stroke}
+                      strokeWidth="3"
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
+                {selectedShapeId === shape.id && (
+                  <>
+                    <button
+                      type="button"
+                      className="note-delete"
+                      onClick={() => deleteShape(shape.id)}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      aria-label="Delete shape"
+                      title="Delete shape (Delete key)"
+                    >
+                      ×
+                    </button>
+                    {shape.kind !== "pen" && (
+                      <div
+                        className="note-resize"
+                        onPointerDown={(event) => startShapeResize(event, shape)}
+                        onPointerMove={moveShapeResize}
+                        onPointerUp={endShapeResize}
+                        aria-label="Resize shape"
+                      />
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
           {notes.map((note) => {
           const selectors = selectorsByNote.get(note.id) ?? [];
           return (
@@ -937,7 +2347,78 @@ function Board({
             </div>
           );
         })}
-        {notes.length === 0 && <p className="board-empty">Loading notes…</p>}
+        {texts.map((textBox) => {
+          const selectors = selectorsByText.get(textBox.id) ?? [];
+          return (
+            <div
+              key={textBox.id}
+              className="text-box"
+              data-text-id={textBox.id}
+              onPointerDown={(event) => {
+                if (event.button === 0) selectTextBox(textBox.id);
+              }}
+              style={{
+                left: textBox.x,
+                top: textBox.y,
+                width: textBox.w,
+                height: textBox.h,
+                color: TEXT_COLORS[textBox.color],
+                fontSize: FONT_SIZE_PX[textBox.fontSize],
+                // A selected text box gets an outline in the
+                // first selector's color, like a selected note.
+                ...(selectors.length > 0
+                  ? { boxShadow: `0 0 0 2px ${selectors[0].color}` }
+                  : undefined),
+              }}
+            >
+              {selectors.length > 0 && (
+                <span
+                  className="text-selector"
+                  style={{ background: selectors[0].color }}
+                >
+                  {selectors.map((person) => person.name).join(", ")}
+                </span>
+              )}
+              <div
+                className="text-handle"
+                onPointerDown={(event) => startTextDrag(event, textBox)}
+                onPointerMove={moveTextDrag}
+                onPointerUp={endTextDrag}
+              />
+              <textarea
+                className="text-box-text"
+                value={textBox.text}
+                onChange={(event) => changeTextBoxText(textBox.id, event.target.value)}
+                onBlur={() => undoManagerRef.current?.stopCapturing()}
+                placeholder="Type something"
+                aria-label="Text box text"
+              />
+              {selectedTextId === textBox.id && (
+                <>
+                  <button
+                    type="button"
+                    className="note-delete"
+                    onClick={() => deleteTextBox(textBox.id)}
+                    aria-label="Delete text box"
+                    title="Delete text box (Delete key)"
+                  >
+                    ×
+                  </button>
+                  <div
+                    className="note-resize"
+                    onPointerDown={(event) => startTextResize(event, textBox)}
+                    onPointerMove={moveTextResize}
+                    onPointerUp={endTextResize}
+                    aria-label="Resize text box"
+                  />
+                </>
+              )}
+            </div>
+          );
+        })}
+        {notes.length === 0 && shapes.length === 0 && texts.length === 0 && (
+          <p className="board-empty">Loading notes…</p>
+        )}
         </div>
         {presence.map((person) =>
           person.cursor ? (
