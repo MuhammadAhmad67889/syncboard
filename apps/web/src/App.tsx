@@ -6,16 +6,24 @@ import {
   DEFAULT_NOTE_SIZE,
   DEFAULT_TEXT_SIZE,
   FONT_SIZE_PX,
+  MIN_FRAME_SIZE,
   MIN_SHAPE_SIZE,
   MIN_TEXT_SIZE,
   NOTE_COLORS,
   TEXT_FONT_SIZES,
+  boxCentreInFrame,
+  connectorEndpoints,
+  createConnector,
+  createFrame,
   createShape,
   createTextBox,
   normalizeShapeBox,
   penPathFromPoints,
   shapeBoxFromPoints,
   type BoardMeta,
+  type Box,
+  type Connector,
+  type Frame,
   type Note,
   type NoteColor,
   type PresenceUser,
@@ -47,6 +55,13 @@ import {
   setTextFontSize,
   type TextMap,
 } from "./texts";
+import { buildFrameMap, readFrame, type FrameMap } from "./frames";
+import {
+  buildConnectorMap,
+  deleteConnectorsReferencing,
+  readConnector,
+  type ConnectorMap,
+} from "./connectors";
 import {
   applyBoardExport,
   boardExportToJson,
@@ -65,8 +80,22 @@ type NoteMap = Y.Map<unknown>;
 
 // The active board tool, from the toolbar. Select moves and edits
 // things; Note drops a sticky note; Text drops a text box; the
-// four shape tools draw shapes by dragging on empty canvas.
-type Tool = "select" | "note" | "text" | ShapeKind;
+// four shape tools draw shapes by dragging on empty canvas; Frame
+// draws a named section the same way; Connector joins two items
+// with an arrow.
+type Tool = "select" | "note" | "text" | "frame" | "connector" | ShapeKind;
+
+// One item a frame drag carries along: what it is, which one, and
+// where it started. Pen shapes also carry their points, because a
+// pen stroke lives in absolute board pixels — moving x/y alone
+// would leave the stroke behind.
+type FrameDragContent = {
+  kind: "note" | "shape" | "text" | "frame";
+  id: string;
+  x: number;
+  y: number;
+  points?: ShapePoint[];
+};
 
 // The toolbar tools, in display order.
 const TOOLS: Array<{ id: Tool; label: string }> = [
@@ -77,6 +106,8 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: "ellipse", label: "Ellipse" },
   { id: "line", label: "Line" },
   { id: "pen", label: "Pen" },
+  { id: "connector", label: "Connector" },
+  { id: "frame", label: "Frame" },
 ];
 
 // Hand-drawn 16px stroke icons for the toolbar, in the button's
@@ -118,6 +149,22 @@ const TOOL_ICONS: Record<Tool, React.ReactNode> = {
   pen: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M11.5 2.5 L13.5 4.5 L6.5 11.5 L3.5 12.5 L4.5 9.5 Z" />
+    </svg>
+  ),
+  // A connector joins two items: a dot where it starts, a line,
+  // and an arrowhead where it lands.
+  connector: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="4" cy="12" r="1.6" fill="currentColor" stroke="none" />
+      <path d="M5.5 10.5 L11.5 4.5" />
+      <path d="M11.5 4.5 L8.5 4.5 M11.5 4.5 L11.5 7.5" />
+    </svg>
+  ),
+  // A frame is a section: a dashed rectangle, like the outline
+  // the board draws around a group of items.
+  frame: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="10" height="10" rx="1" strokeDasharray="3 2" />
     </svg>
   ),
 };
@@ -669,6 +716,13 @@ function Board({
   // The text boxes on the board, from the shared "texts" map —
   // free-floating text with no background, unlike notes.
   const [texts, setTexts] = useState<TextBox[]>([]);
+  // The frames on the board, from the shared "frames" map —
+  // named sections that hold other items.
+  const [frames, setFrames] = useState<Frame[]>([]);
+  // The connectors on the board, from the shared "connectors"
+  // map — arrows joining two items, recomputed from their
+  // positions every render.
+  const [connectors, setConnectors] = useState<Connector[]>([]);
   // The active tool. Select is the default; Escape returns here.
   const [tool, setTool] = useState<Tool>("select");
   // Everyone else on the board, from Awareness. Our own presence
@@ -683,6 +737,21 @@ function Board({
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   // The text box this user clicked.
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  // The frame this user clicked.
+  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  // The connector this user clicked.
+  const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
+  // The first item of a connector being drawn: the user picked
+  // this item with the Connector tool and is about to pick the
+  // second one. Null when no connector is in progress.
+  const [connectorPendingFromId, setConnectorPendingFromId] = useState<string | null>(null);
+  // The frame title being typed right now, as a draft. The shared
+  // title only changes on blur or Enter — typing straight into
+  // the shared title would snap an emptied title back to "Frame"
+  // on every keystroke.
+  const [frameTitleDraft, setFrameTitleDraft] = useState<{ id: string; value: string } | null>(
+    null,
+  );
   // The color new notes get, and the color the picker shows as
   // active. Picking a color also recolors the selected note.
   const [pickedColor, setPickedColor] = useState<NoteColor>("yellow");
@@ -711,6 +780,15 @@ function Board({
   const notesMapRef = useRef<Y.Map<NoteMap> | null>(null);
   const shapesMapRef = useRef<Y.Map<ShapeMap> | null>(null);
   const textsMapRef = useRef<Y.Map<TextMap> | null>(null);
+  const framesMapRef = useRef<Y.Map<FrameMap> | null>(null);
+  const connectorsMapRef = useRef<Y.Map<ConnectorMap> | null>(null);
+  // The selected frame and connector, mirrored in refs so the
+  // keyboard handler — bound once — can read them without going
+  // stale. Frames and connectors are not published to Awareness
+  // (presence only tracks notes, shapes, and text boxes), so the
+  // presence ref cannot carry them.
+  const selectedFrameRef = useRef<string | null>(null);
+  const selectedConnectorRef = useRef<string | null>(null);
   // The hidden file input for Import JSON — the toolbar button
   // opens it, and the change handler reads the picked file.
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -737,6 +815,9 @@ function Board({
   const MIN_ZOOM = 0.25;
   const MAX_ZOOM = 3;
   const ZOOM_STEP = 1.25;
+  // A frame's title sits this far inside its top-left corner —
+  // the same 12px as --space-sm in tokens.css.
+  const FRAME_TITLE_INSET = 12;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   // The transformed layer inside the board — the notes live in it.
@@ -816,6 +897,36 @@ function Board({
     shapeId: string;
     points: ShapePoint[];
   } | null>(null);
+  // The frame being drawn on empty canvas, if any — same shape
+  // as a shape draw, but the box becomes a frame.
+  const frameDrawRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    frameId: string;
+  } | null>(null);
+  // The frame drag in progress, if any. contents holds every item
+  // whose centre was inside the frame when the drag started —
+  // each with the position it started at — so the whole group
+  // moves by the same amount.
+  const frameDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    frameX: number;
+    frameY: number;
+    contents: FrameDragContent[];
+  } | null>(null);
+  // The frame resize in progress, if any — same shape as the drag.
+  const frameResizeRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    frameW: number;
+    frameH: number;
+  } | null>(null);
   // The per-user UndoManager: it tracks only changes stamped
   // with localOrigin, on the shared notes and shapes maps and
   // their children (nested note maps and their Y.Text, shape maps
@@ -855,16 +966,23 @@ function Board({
     shapesMapRef.current = shapesMap;
     const textsMap = doc.getMap<TextMap>("texts");
     textsMapRef.current = textsMap;
+    const framesMap = doc.getMap<FrameMap>("frames");
+    framesMapRef.current = framesMap;
+    const connectorsMap = doc.getMap<ConnectorMap>("connectors");
+    connectorsMapRef.current = connectorsMap;
 
     // Per-user undo: the manager only tracks transactions stamped
     // with our own origin, so another user's edits never land on
-    // our undo stack. It watches all three shared roots — notes,
-    // shapes, and text boxes — so one undo stack covers all of
-    // them. Drags and typing batch into one step while they keep
-    // coming within the capture timeout (500 ms).
-    const undoManager = new Y.UndoManager([notesMap, shapesMap, textsMap], {
-      trackedOrigins: new Set([localOrigin]),
-    });
+    // our undo stack. It watches all five shared roots — notes,
+    // shapes, text boxes, frames, and connectors — so one undo
+    // stack covers all of them. Drags and typing batch into one
+    // step while they keep coming within the capture timeout (500 ms).
+    const undoManager = new Y.UndoManager(
+      [notesMap, shapesMap, textsMap, framesMap, connectorsMap],
+      {
+        trackedOrigins: new Set([localOrigin]),
+      },
+    );
     undoManagerRef.current = undoManager;
     function refreshUndoState(): void {
       setCanUndo(undoManager.canUndo());
@@ -911,6 +1029,30 @@ function Board({
     textsMap.observeDeep(snapshotTexts);
     snapshotTexts();
 
+    // Re-reads every frame from the shared document into React
+    // state. observeDeep fires for frame moves, resizes, color
+    // changes, and title edits alike.
+    function snapshotFrames(): void {
+      const next: Frame[] = [];
+      framesMap.forEach((frameMap, id) => next.push(readFrame(id, frameMap)));
+      setFrames(next);
+    }
+
+    framesMap.observeDeep(snapshotFrames);
+    snapshotFrames();
+
+    // Re-reads every connector from the shared document into
+    // React state. observeDeep fires for new connectors and for
+    // deletions when an endpoint goes away.
+    function snapshotConnectors(): void {
+      const next: Connector[] = [];
+      connectorsMap.forEach((connectorMap, id) => next.push(readConnector(id, connectorMap)));
+      setConnectors(next);
+    }
+
+    connectorsMap.observeDeep(snapshotConnectors);
+    snapshotConnectors();
+
     // Presence: this client publishes its own cursor and selection
     // through Awareness, and reads everyone else's from the same
     // Awareness instance. Awareness is ephemeral — the server
@@ -951,12 +1093,16 @@ function Board({
       notesMap.unobserveDeep(snapshot);
       shapesMap.unobserveDeep(snapshotShapes);
       textsMap.unobserveDeep(snapshotTexts);
+      framesMap.unobserveDeep(snapshotFrames);
+      connectorsMap.unobserveDeep(snapshotConnectors);
       provider.destroy();
       doc.destroy();
       docRef.current = null;
       notesMapRef.current = null;
       shapesMapRef.current = null;
       textsMapRef.current = null;
+      framesMapRef.current = null;
+      connectorsMapRef.current = null;
     };
   }, [token, boardId, localOrigin, onAuthFailed]);
 
@@ -978,9 +1124,11 @@ function Board({
   }, [focusTextId, texts]);
 
   // Starts a drag from a note's handle. The textarea underneath
-  // stays free for text editing — only the handle drags.
+  // stays free for text editing — only the handle drags. With
+  // the Connector tool, a press picks an endpoint instead, so
+  // the handle does not drag.
   function startDrag(event: React.PointerEvent<HTMLDivElement>, note: Note): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || tool === "connector") return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       id: note.id,
@@ -1033,6 +1181,51 @@ function Board({
       x: (clientX - rect.left - pan.x) / zoom,
       y: (clientY - rect.top - pan.y) / zoom,
     };
+  }
+
+  // A press on empty board — the board or canvas itself, or a
+  // frame's background. A frame is a container, not a wall: the
+  // creation tools work inside it exactly as they do on open
+  // canvas, so notes, text, shapes, and nested frames can be
+  // dropped where they belong. The canvas calls this when the
+  // press lands on empty board; a frame calls it when the press
+  // lands on the frame itself (its title, delete, and resize
+  // controls stop the press before it gets here).
+  function handleEmptyCanvasPress(event: React.PointerEvent<HTMLDivElement>): void {
+    if (tool === "rect" || tool === "ellipse" || tool === "line" || tool === "pen") {
+      startDraw(event);
+    } else if (tool === "frame") {
+      // Dragging empty canvas with the Frame tool draws
+      // a named section.
+      startFrameDraw(event);
+    } else if (tool === "connector") {
+      // Clicking empty canvas cancels a connector in
+      // progress — there is nothing here to connect to.
+      setConnectorPendingFromId(null);
+    } else if (tool === "note") {
+      // Clicking empty canvas with the Note tool drops a
+      // note centered on the click.
+      const point = toBoardCoords(event.clientX, event.clientY);
+      createNote(
+        Math.max(0, point.x - DEFAULT_NOTE_SIZE.w / 2),
+        Math.max(0, point.y - DEFAULT_NOTE_SIZE.h / 2),
+      );
+    } else if (tool === "text") {
+      // Clicking empty canvas with the Text tool drops a
+      // text box centered on the click and focuses it.
+      // Canceling the press keeps its default focus change
+      // from blurring that textarea: the press lands on
+      // empty canvas, so the browser would otherwise move
+      // focus back to the board right after the box appears.
+      event.preventDefault();
+      const point = toBoardCoords(event.clientX, event.clientY);
+      createTextBoxAtPoint(point.x, point.y);
+    } else {
+      // Select mode: the press clears the selection and
+      // starts a pan.
+      clearSelection();
+      startPan(event);
+    }
   }
 
   // Zooms by a factor around the center of the visible board, so
@@ -1131,11 +1324,25 @@ function Board({
 
   // Sets the selection in state and in Awareness at once, so
   // the outline, the presence bar, and other users stay in sync.
-  // A note, a shape, and a text box are never selected together.
-  function setSelection(noteId: string | null, shapeId: string | null, textId: string | null = null): void {
+  // Only one thing is selected at a time — a note, a shape, a
+  // text box, a frame, or a connector. Frames and connectors are
+  // local only: presence tracks notes, shapes, and text boxes,
+  // so their selection lives in state and in the refs the
+  // keyboard handler reads, not in Awareness.
+  function setSelection(
+    noteId: string | null,
+    shapeId: string | null,
+    textId: string | null = null,
+    frameId: string | null = null,
+    connectorId: string | null = null,
+  ): void {
     setSelectedNoteId(noteId);
     setSelectedShapeId(shapeId);
     setSelectedTextId(textId);
+    setSelectedFrameId(frameId);
+    setSelectedConnectorId(connectorId);
+    selectedFrameRef.current = frameId;
+    selectedConnectorRef.current = connectorId;
     localPresenceRef.current.selectedNoteIds = noteId ? [noteId] : [];
     localPresenceRef.current.selectedShapeIds = shapeId ? [shapeId] : [];
     localPresenceRef.current.selectedTextIds = textId ? [textId] : [];
@@ -1160,12 +1367,28 @@ function Board({
     setSelection(null, null, textId);
   }
 
+  // Clicking a frame selects it. Frames are local-only selection,
+  // so this does not publish to presence.
+  function selectFrame(frameId: string): void {
+    if (selectedFrameId === frameId) return;
+    setSelection(null, null, null, frameId);
+  }
+
+  // Clicking a connector selects it, so it can be deleted. Like
+  // frames, this is local-only selection.
+  function selectConnector(connectorId: string): void {
+    if (selectedConnectorId === connectorId) return;
+    setSelection(null, null, null, null, connectorId);
+  }
+
   // Clicking empty board clears the selection.
   function clearSelection(): void {
     if (
       localPresenceRef.current.selectedNoteIds.length === 0 &&
       localPresenceRef.current.selectedShapeIds.length === 0 &&
-      localPresenceRef.current.selectedTextIds.length === 0
+      localPresenceRef.current.selectedTextIds.length === 0 &&
+      selectedFrameRef.current === null &&
+      selectedConnectorRef.current === null
     ) {
       return;
     }
@@ -1243,22 +1466,29 @@ function Board({
   }
 
   // Picks the color for new notes and shapes — and recolors the
-  // selected note, shape, or text box right away, if there is one.
+  // selected note, shape, text box, frame, or connector right
+  // away, if there is one.
   function pickColor(color: NoteColor): void {
     setPickedColor(color);
     if (selectedNoteId) recolorNote(selectedNoteId, color);
     if (selectedShapeId) recolorShape(selectedShapeId, color);
     if (selectedTextId) recolorTextBox(selectedTextId, color);
+    if (selectedFrameId) recolorFrame(selectedFrameId, color);
+    if (selectedConnectorId) recolorConnector(selectedConnectorId, color);
   }
 
   // Removes a note from the shared map, so it disappears in every
-  // tab. If it was the selected note, the selection clears too.
+  // tab. Any connector attached to it goes in the same
+  // transaction, so one undo brings both back. If it was the
+  // selected note, the selection clears too.
   function deleteNote(noteId: string): void {
     const doc = docRef.current;
     const notesMap = notesMapRef.current;
+    const connectorsMap = connectorsMapRef.current;
     if (!doc || !notesMap || !notesMap.has(noteId)) return;
     doc.transact(() => {
       notesMap.delete(noteId);
+      if (connectorsMap) deleteConnectorsReferencing(connectorsMap, noteId);
     }, localOrigin);
     if (localPresenceRef.current.selectedNoteIds.includes(noteId)) {
       setSelection(null, null);
@@ -1333,14 +1563,17 @@ function Board({
   }
 
   // Removes a text box from the shared map, so it disappears in
-  // every tab. If it was the selected text box, the selection
-  // clears too.
+  // every tab. Any connector attached to it goes in the same
+  // transaction, so one undo brings both back. If it was the
+  // selected text box, the selection clears too.
   function deleteTextBox(textId: string): void {
     const doc = docRef.current;
     const textsMap = textsMapRef.current;
+    const connectorsMap = connectorsMapRef.current;
     if (!doc || !textsMap || !textsMap.has(textId)) return;
     doc.transact(() => {
       textsMap.delete(textId);
+      if (connectorsMap) deleteConnectorsReferencing(connectorsMap, textId);
     }, localOrigin);
     if (localPresenceRef.current.selectedTextIds.includes(textId)) {
       setSelection(null, null);
@@ -1349,8 +1582,9 @@ function Board({
 
   // Starts a drag from a text box's handle. The textarea
   // underneath stays free for text editing — only the handle drags.
+  // With the Connector tool, a press picks an endpoint instead.
   function startTextDrag(event: React.PointerEvent<HTMLDivElement>, textBox: TextBox): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || tool === "connector") return;
     event.currentTarget.setPointerCapture(event.pointerId);
     textDragRef.current = {
       id: textBox.id,
@@ -1389,8 +1623,9 @@ function Board({
   }
 
   // Starts a resize from the text box's bottom-right handle.
+  // With the Connector tool, a press picks an endpoint instead.
   function startTextResize(event: React.PointerEvent<HTMLDivElement>, textBox: TextBox): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || tool === "connector") return;
     event.currentTarget.setPointerCapture(event.pointerId);
     textResizeRef.current = {
       id: textBox.id,
@@ -1541,23 +1776,88 @@ function Board({
   }
 
   // Removes a shape from the shared map, so it disappears in every
-  // tab. If it was the selected shape, the selection clears too.
+  // tab. Any connector attached to it goes in the same
+  // transaction, so one undo brings both back. If it was the
+  // selected shape, the selection clears too.
   function deleteShape(shapeId: string): void {
     const doc = docRef.current;
     const shapesMap = shapesMapRef.current;
+    const connectorsMap = connectorsMapRef.current;
     if (!doc || !shapesMap || !shapesMap.has(shapeId)) return;
     doc.transact(() => {
       shapesMap.delete(shapeId);
+      if (connectorsMap) deleteConnectorsReferencing(connectorsMap, shapeId);
     }, localOrigin);
     if (localPresenceRef.current.selectedShapeIds.includes(shapeId)) {
       setSelection(null, null);
     }
   }
 
+  // Removes a frame from the shared map, so it disappears in
+  // every tab. The items inside it stay exactly where they are —
+  // a frame is only a container, not their owner. Any connector
+  // attached to the frame goes in the same transaction. If it
+  // was the selected frame, the selection clears too.
+  function deleteFrame(frameId: string): void {
+    const doc = docRef.current;
+    const framesMap = framesMapRef.current;
+    const connectorsMap = connectorsMapRef.current;
+    if (!doc || !framesMap || !framesMap.has(frameId)) return;
+    doc.transact(() => {
+      framesMap.delete(frameId);
+      if (connectorsMap) deleteConnectorsReferencing(connectorsMap, frameId);
+    }, localOrigin);
+    if (selectedFrameRef.current === frameId) {
+      setSelection(null, null);
+    }
+  }
+
+  // Removes a connector from the shared map, so it disappears in
+  // every tab. The two items it joined stay where they are. If
+  // it was the selected connector, the selection clears too.
+  function deleteConnector(connectorId: string): void {
+    const doc = docRef.current;
+    const connectorsMap = connectorsMapRef.current;
+    if (!doc || !connectorsMap || !connectorsMap.has(connectorId)) return;
+    doc.transact(() => {
+      connectorsMap.delete(connectorId);
+    }, localOrigin);
+    if (selectedConnectorRef.current === connectorId) {
+      setSelection(null, null);
+    }
+  }
+
+  // Recolors one frame. The change syncs to every tab like any
+  // other edit, and undo reverts it.
+  function recolorFrame(frameId: string, color: NoteColor): void {
+    const doc = docRef.current;
+    const framesMap = framesMapRef.current;
+    if (!doc || !framesMap) return;
+    const frameMap = framesMap.get(frameId);
+    if (!frameMap) return;
+    doc.transact(() => {
+      frameMap.set("color", color);
+    }, localOrigin);
+  }
+
+  // Recolors one connector. The change syncs to every tab like
+  // any other edit, and undo reverts it.
+  function recolorConnector(connectorId: string, color: NoteColor): void {
+    const doc = docRef.current;
+    const connectorsMap = connectorsMapRef.current;
+    if (!doc || !connectorsMap) return;
+    const connectorMap = connectorsMap.get(connectorId);
+    if (!connectorMap) return;
+    doc.transact(() => {
+      connectorMap.set("color", color);
+    }, localOrigin);
+  }
+
   // Starts a drag from a shape. The whole shape is the handle —
-  // there is no text to edit, so the entire shape grabs.
+  // there is no text to edit, so the entire shape grabs. With
+  // the Connector tool, a press picks an endpoint instead.
   function startShapeDrag(event: React.PointerEvent<HTMLDivElement>, shape: Shape): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || tool === "connector") return;
     event.currentTarget.setPointerCapture(event.pointerId);
     shapeDragRef.current = {
       id: shape.id,
@@ -1598,9 +1898,10 @@ function Board({
   // Starts a resize from the shape's bottom-right handle. Pen
   // strokes have no handle — resizing one would stretch its
   // points out of shape, so pen shapes move and delete but do
-  // not resize.
+  // not resize. With the Connector tool, a press picks an
+  // endpoint instead.
   function startShapeResize(event: React.PointerEvent<HTMLDivElement>, shape: Shape): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || tool === "connector") return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     shapeResizeRef.current = {
@@ -1642,13 +1943,297 @@ function Board({
     }
   }
 
+  // Creates a frame at the given board position, in the picked
+  // color, and selects it so the user can drag or rename it right
+  // away. A frame starts at the minimum size and grows with the drag.
+  function createFrameAtPoint(x: number, y: number): string {
+    const doc = docRef.current;
+    const framesMap = framesMapRef.current;
+    if (!doc || !framesMap) return "";
+    const id = crypto.randomUUID();
+    const frame = createFrame(
+      id,
+      Math.round(x),
+      Math.round(y),
+      MIN_FRAME_SIZE,
+      MIN_FRAME_SIZE,
+      pickedColor,
+    );
+    doc.transact(() => {
+      framesMap.set(id, buildFrameMap(frame));
+    }, localOrigin);
+    selectFrame(id);
+    return id;
+  }
+
+  // Starts drawing a frame on empty canvas. The frame is created
+  // right away, so the other tab sees it appear as soon as the
+  // drag starts.
+  function startFrameDraw(event: React.PointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return;
+    if (tool !== "frame") return;
+    const point = toBoardCoords(event.clientX, event.clientY);
+    const id = createFrameAtPoint(point.x, point.y);
+    if (!id) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    frameDrawRef.current = {
+      pointerId: event.pointerId,
+      startX: point.x,
+      startY: point.y,
+      frameId: id,
+    };
+  }
+
+  function moveFrameDraw(event: React.PointerEvent<HTMLDivElement>): void {
+    const draw = frameDrawRef.current;
+    const doc = docRef.current;
+    const framesMap = framesMapRef.current;
+    if (!draw || !doc || !framesMap || event.pointerId !== draw.pointerId) return;
+    const frameMap = framesMap.get(draw.frameId);
+    if (!frameMap) return;
+    const point = toBoardCoords(event.clientX, event.clientY);
+    // A drag in any direction defines the box, so dragging up or
+    // left grows the frame the other way instead of shrinking it.
+    const box = normalizeShapeBox(draw.startX, draw.startY, point.x, point.y);
+    doc.transact(() => {
+      frameMap.set("x", box.x);
+      frameMap.set("y", box.y);
+      frameMap.set("w", box.w);
+      frameMap.set("h", box.h);
+    }, localOrigin);
+  }
+
+  function endFrameDraw(event: React.PointerEvent<HTMLDivElement>): void {
+    if (frameDrawRef.current?.pointerId === event.pointerId) {
+      frameDrawRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // The items whose centres are inside a frame, with the position
+  // each one starts at. A frame drag moves all of them by the same
+  // amount as the frame. A frame inside the frame moves too —
+  // its contents are inside the outer frame as well, so they are
+  // listed directly and move in the same step.
+  function frameContents(frame: Frame): FrameDragContent[] {
+    const contents: FrameDragContent[] = [];
+    for (const note of notes) {
+      if (boxCentreInFrame(frame, note)) {
+        contents.push({ kind: "note", id: note.id, x: note.x, y: note.y });
+      }
+    }
+    for (const shape of shapes) {
+      if (boxCentreInFrame(frame, shape)) {
+        contents.push({
+          kind: "shape",
+          id: shape.id,
+          x: shape.x,
+          y: shape.y,
+          points: shape.kind === "pen" ? shape.points : undefined,
+        });
+      }
+    }
+    for (const textBox of texts) {
+      if (boxCentreInFrame(frame, textBox)) {
+        contents.push({ kind: "text", id: textBox.id, x: textBox.x, y: textBox.y });
+      }
+    }
+    for (const other of frames) {
+      if (other.id !== frame.id && boxCentreInFrame(frame, other)) {
+        contents.push({ kind: "frame", id: other.id, x: other.x, y: other.y });
+      }
+    }
+    return contents;
+  }
+
+  // Starts a drag from a frame. The whole frame is the handle —
+  // there is no text to edit, so the entire frame grabs, except
+  // the title input (which stops the press so the frame does not
+  // move while the user is renaming it). With the Connector tool,
+  // a press picks an endpoint instead.
+  function startFrameDrag(event: React.PointerEvent<HTMLDivElement>, frame: Frame): void {
+    if (event.button !== 0 || tool === "connector") return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    frameDragRef.current = {
+      id: frame.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      frameX: frame.x,
+      frameY: frame.y,
+      contents: frameContents(frame),
+    };
+  }
+
+  function moveFrameDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    const drag = frameDragRef.current;
+    const doc = docRef.current;
+    if (!drag || !doc || event.pointerId !== drag.pointerId) return;
+    const notesMap = notesMapRef.current;
+    const shapesMap = shapesMapRef.current;
+    const textsMap = textsMapRef.current;
+    const framesMap = framesMapRef.current;
+    if (!notesMap || !shapesMap || !textsMap || !framesMap) return;
+    const frameMap = framesMap.get(drag.id);
+    if (!frameMap) return;
+    // Screen pixels become board pixels by dividing by the zoom —
+    // at 200% a 20px mouse move is only 10 board pixels.
+    const deltaX = (event.clientX - drag.startX) / zoom;
+    const deltaY = (event.clientY - drag.startY) / zoom;
+    const nextX = Math.max(0, drag.frameX + deltaX);
+    const nextY = Math.max(0, drag.frameY + deltaY);
+    // The frame cannot move past the top-left corner, so the
+    // contents move by the frame's actual move, not the raw
+    // mouse delta — otherwise the group would drift apart.
+    const moveX = nextX - drag.frameX;
+    const moveY = nextY - drag.frameY;
+    // One transaction, so the frame and its contents move together
+    // and one undo step reverts the whole drag.
+    doc.transact(() => {
+      frameMap.set("x", Math.round(nextX));
+      frameMap.set("y", Math.round(nextY));
+      for (const item of drag.contents) {
+        if (item.kind === "note") {
+          notesMap.get(item.id)?.set("x", Math.round(item.x + moveX));
+          notesMap.get(item.id)?.set("y", Math.round(item.y + moveY));
+        } else if (item.kind === "shape") {
+          const shapeMap = shapesMap.get(item.id);
+          if (!shapeMap) continue;
+          shapeMap.set("x", Math.round(item.x + moveX));
+          shapeMap.set("y", Math.round(item.y + moveY));
+          // A pen stroke lives in absolute board pixels: the
+          // points move with the box, or the stroke stays behind.
+          if (item.points) {
+            const points = shapeMap.get("points");
+            if (points instanceof Y.Array) {
+              const shifted: number[] = [];
+              for (const point of item.points) {
+                shifted.push(Math.round(point.x + moveX), Math.round(point.y + moveY));
+              }
+              points.delete(0, points.length);
+              points.push(shifted);
+            }
+          }
+        } else if (item.kind === "text") {
+          textsMap.get(item.id)?.set("x", Math.round(item.x + moveX));
+          textsMap.get(item.id)?.set("y", Math.round(item.y + moveY));
+        } else {
+          framesMap.get(item.id)?.set("x", Math.round(item.x + moveX));
+          framesMap.get(item.id)?.set("y", Math.round(item.y + moveY));
+        }
+      }
+    }, localOrigin);
+  }
+
+  function endFrameDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (frameDragRef.current?.pointerId === event.pointerId) {
+      frameDragRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Starts a resize from the frame's bottom-right handle.
+  // Resizing a frame does not move its contents — they stay where
+  // they are, and anything that ends up outside the frame simply
+  // stops being inside it. With the Connector tool, a press picks
+  // an endpoint instead.
+  function startFrameResize(event: React.PointerEvent<HTMLDivElement>, frame: Frame): void {
+    if (event.button !== 0 || tool === "connector") return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    frameResizeRef.current = {
+      id: frame.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      frameW: frame.w,
+      frameH: frame.h,
+    };
+  }
+
+  function moveFrameResize(event: React.PointerEvent<HTMLDivElement>): void {
+    const resize = frameResizeRef.current;
+    const doc = docRef.current;
+    const framesMap = framesMapRef.current;
+    if (!resize || !doc || !framesMap || event.pointerId !== resize.pointerId) return;
+    const frameMap = framesMap.get(resize.id);
+    if (!frameMap) return;
+    const nextW = Math.max(
+      MIN_FRAME_SIZE,
+      resize.frameW + (event.clientX - resize.startX) / zoom,
+    );
+    const nextH = Math.max(
+      MIN_FRAME_SIZE,
+      resize.frameH + (event.clientY - resize.startY) / zoom,
+    );
+    // Same batching as a drag: rapid moves merge into one undo step.
+    doc.transact(() => {
+      frameMap.set("w", Math.round(nextW));
+      frameMap.set("h", Math.round(nextH));
+    }, localOrigin);
+  }
+
+  function endFrameResize(event: React.PointerEvent<HTMLDivElement>): void {
+    if (frameResizeRef.current?.pointerId === event.pointerId) {
+      frameResizeRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Renames a frame. An empty title falls back to "Frame", so a
+  // frame always has a name to show.
+  function renameFrame(frameId: string, next: string): void {
+    const doc = docRef.current;
+    const framesMap = framesMapRef.current;
+    if (!doc || !framesMap) return;
+    const frameMap = framesMap.get(frameId);
+    if (!frameMap) return;
+    const title = next.trim() === "" ? "Frame" : next;
+    doc.transact(() => {
+      frameMap.set("title", title);
+    }, localOrigin);
+  }
+
+  // Picks an endpoint for a connector. The first click arms the
+  // connector on that item; the second click on a different item
+  // creates it. Clicking the same item again cancels it.
+  function pickConnectorEndpoint(itemId: string): void {
+    if (!connectorPendingFromId) {
+      setConnectorPendingFromId(itemId);
+      return;
+    }
+    if (connectorPendingFromId === itemId) {
+      setConnectorPendingFromId(null);
+      return;
+    }
+    createConnectorBetween(connectorPendingFromId, itemId);
+    setConnectorPendingFromId(null);
+  }
+
+  // Creates a connector between two items, in the picked color,
+  // and selects it so the user can recolor or delete it right
+  // away. The connector tool stays active, so the next click
+  // starts another connector.
+  function createConnectorBetween(fromId: string, toId: string): void {
+    const doc = docRef.current;
+    const connectorsMap = connectorsMapRef.current;
+    if (!doc || !connectorsMap) return;
+    const id = crypto.randomUUID();
+    const connector = createConnector(id, fromId, toId, pickedColor);
+    doc.transact(() => {
+      connectorsMap.set(id, buildConnectorMap(connector));
+    }, localOrigin);
+    selectConnector(id);
+  }
+
   // The smallest a note can be resized to — smaller than this,
   // the text is unreadable.
   const MIN_NOTE_SIZE = 120;
 
-  // Starts a resize from the note's bottom-right handle.
+  // Starts a resize from the note's bottom-right handle. With
+  // the Connector tool, a press picks an endpoint instead.
   function startResize(event: React.PointerEvent<HTMLDivElement>, note: Note): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || tool === "connector") return;
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeRef.current = {
       id: note.id,
@@ -1707,7 +2292,7 @@ function Board({
   // Downloads the board as a PNG image, rendered from the synced
   // board state (see export.ts for why it is drawn, not screenshotted).
   function exportPng(): void {
-    const canvas = renderBoardToCanvas(notes, shapes, texts);
+    const canvas = renderBoardToCanvas(notes, shapes, texts, frames, connectors);
     canvas.toBlob((blob) => {
       if (!blob) {
         setImportMessage("Could not make a PNG from this board.");
@@ -1718,8 +2303,9 @@ function Board({
     }, "image/png");
   }
 
-  // Downloads the whole board — notes, shapes, and text boxes —
-  // as a JSON file, so it can be saved or moved to another board.
+  // Downloads the whole board — notes, shapes, text boxes,
+  // frames, and connectors — as a JSON file, so it can be saved
+  // or moved to another board.
   function exportJson(): void {
     const data: BoardExport = {
       version: 1,
@@ -1728,6 +2314,8 @@ function Board({
       notes,
       shapes,
       texts,
+      frames,
+      connectors,
     };
     downloadBlob(
       `syncboard-${boardId}.json`,
@@ -1755,7 +2343,8 @@ function Board({
     if (
       !window.confirm(
         `Replace this board with "${file.name}"? It has ${parsed.notes.length} notes, ` +
-          `${parsed.shapes.length} shapes, and ${parsed.texts.length} text boxes. ` +
+          `${parsed.shapes.length} shapes, ${parsed.texts.length} text boxes, ` +
+          `${parsed.frames.length} frames, and ${parsed.connectors.length} connectors. ` +
           `Everything on this board now will be gone — press Ctrl+Z to undo the import.`,
       )
     ) {
@@ -1767,7 +2356,8 @@ function Board({
     setSelection(null, null);
     setImportMessage(
       `Imported ${parsed.notes.length} notes, ${parsed.shapes.length} shapes, ` +
-        `and ${parsed.texts.length} text boxes from "${file.name}".`,
+        `${parsed.texts.length} text boxes, ${parsed.frames.length} frames, and ` +
+        `${parsed.connectors.length} connectors from "${file.name}".`,
     );
   }
 
@@ -1791,9 +2381,10 @@ function Board({
   }
 
   // Keyboard shortcuts: Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo,
-  // Delete / Backspace deletes the selected note or shape, Escape
-  // returns to the Select tool. Delete only fires when the user
-  // is not typing in a note's textarea.
+  // Delete / Backspace deletes the selected note, shape, text
+  // box, frame, or connector, Escape returns to the Select tool
+  // and cancels a connector in progress. Delete only fires when
+  // the user is not typing in a note's textarea.
   // Ctrl+Z is caught even while typing: the textarea is controlled
   // by the shared document, so the browser's native text undo
   // would fight React — the UndoManager is the one that works.
@@ -1807,6 +2398,7 @@ function Board({
       const key = event.key.toLowerCase();
       if (event.key === "Escape") {
         setTool("select");
+        setConnectorPendingFromId(null);
         return;
       }
       if (mod && !event.shiftKey && key === "z") {
@@ -1823,6 +2415,8 @@ function Board({
         const selectedNote = localPresenceRef.current.selectedNoteIds[0];
         const selectedShape = localPresenceRef.current.selectedShapeIds[0];
         const selectedText = localPresenceRef.current.selectedTextIds[0];
+        const selectedFrame = selectedFrameRef.current;
+        const selectedConnector = selectedConnectorRef.current;
         if (selectedNote) {
           event.preventDefault();
           deleteNote(selectedNote);
@@ -1832,6 +2426,12 @@ function Board({
         } else if (selectedText) {
           event.preventDefault();
           deleteTextBox(selectedText);
+        } else if (selectedFrame) {
+          event.preventDefault();
+          deleteFrame(selectedFrame);
+        } else if (selectedConnector) {
+          event.preventDefault();
+          deleteConnector(selectedConnector);
         }
       }
     }
@@ -1910,6 +2510,29 @@ function Board({
   }
   for (const person of presence) {
     for (const textId of person.selectedTextIds) addTextSelector(textId, person);
+  }
+
+  // The boxes of every item on the board, by id. A connector's
+  // endpoints are resolved through this map, so a connector
+  // follows whichever item it points at.
+  const boxesById = new Map<string, Box>();
+  for (const note of notes) boxesById.set(note.id, note);
+  for (const shape of shapes) boxesById.set(shape.id, shape);
+  for (const textBox of texts) boxesById.set(textBox.id, textBox);
+  for (const frame of frames) boxesById.set(frame.id, frame);
+
+  // The midpoint of the selected connector, where its delete
+  // button sits. Null when nothing is selected or an endpoint
+  // is gone.
+  let selectedConnectorMid: { x: number; y: number } | null = null;
+  const selectedConnector = connectors.find((item) => item.id === selectedConnectorId);
+  if (selectedConnector) {
+    const from = boxesById.get(selectedConnector.fromId);
+    const to = boxesById.get(selectedConnector.toId);
+    if (from && to) {
+      const ends = connectorEndpoints(from, to);
+      selectedConnectorMid = { x: (ends.x1 + ends.x2) / 2, y: (ends.y1 + ends.y2) / 2 };
+    }
   }
 
   return (
@@ -2032,7 +2655,9 @@ function Board({
                     ? "Click empty canvas to add a note"
                     : item.id === "text"
                       ? "Click empty canvas to add a text box"
-                      : `Drag on empty canvas to draw a ${item.label.toLowerCase()}`
+                      : item.id === "connector"
+                        ? "Click one item, then another, to connect them with an arrow"
+                        : `Drag on empty canvas to draw a ${item.label.toLowerCase()}`
               }
             >
               {TOOL_ICONS[item.id]}
@@ -2176,6 +2801,14 @@ function Board({
           </button>
         </p>
       )}
+      {connectorPendingFromId && (
+        <p className="board-notice" role="status">
+          Connector started: click another note, shape, text box, or frame to connect to it.{" "}
+          <button type="button" onClick={() => setConnectorPendingFromId(null)}>
+            Cancel
+          </button>
+        </p>
+      )}
       <div
         className={`board${panning ? " panning" : ""}${tool !== "select" ? " drawing" : ""}`}
         ref={boardRef}
@@ -2183,48 +2816,26 @@ function Board({
           trackCursor(event);
           movePan(event);
           moveDraw(event);
+          moveFrameDraw(event);
           moveTextDrag(event);
         }}
         onPointerLeave={clearCursor}
         onPointerDown={(event) => {
-          // A press on empty board (not on a note or shape).
+          // A press on empty board (not on a note, shape, or frame).
           if (event.target === event.currentTarget || event.target === canvasRef.current) {
-            if (tool === "rect" || tool === "ellipse" || tool === "line" || tool === "pen") {
-              startDraw(event);
-            } else if (tool === "note") {
-              // Clicking empty canvas with the Note tool drops a
-              // note centered on the click.
-              const point = toBoardCoords(event.clientX, event.clientY);
-              createNote(
-                Math.max(0, point.x - DEFAULT_NOTE_SIZE.w / 2),
-                Math.max(0, point.y - DEFAULT_NOTE_SIZE.h / 2),
-              );
-            } else if (tool === "text") {
-              // Clicking empty canvas with the Text tool drops a
-              // text box centered on the click and focuses it.
-              // Canceling the press keeps its default focus change
-              // from blurring that textarea: the press lands on
-              // empty canvas, so the browser would otherwise move
-              // focus back to the board right after the box appears.
-              event.preventDefault();
-              const point = toBoardCoords(event.clientX, event.clientY);
-              createTextBoxAtPoint(point.x, point.y);
-            } else {
-              // Select mode: the press clears the selection and
-              // starts a pan.
-              clearSelection();
-              startPan(event);
-            }
+            handleEmptyCanvasPress(event);
           }
         }}
         onPointerUp={(event) => {
           endPan(event);
           endDraw(event);
+          endFrameDraw(event);
           endTextDrag(event);
         }}
         onPointerCancel={(event) => {
           endPan(event);
           endDraw(event);
+          endFrameDraw(event);
           endTextDrag(event);
         }}
         onDoubleClick={createNoteAtPoint}
@@ -2234,9 +2845,170 @@ function Board({
           ref={canvasRef}
           style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
         >
+          {frames.map((frame) => {
+            const isConnectorSource = connectorPendingFromId === frame.id;
+            const isSelected = selectedFrameId === frame.id;
+            const stroke = SHAPE_STROKE_COLORS[frame.color];
+            return (
+              <div
+                key={frame.id}
+                className="frame"
+                data-frame-id={frame.id}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) return;
+                  if (tool === "connector") {
+                    event.preventDefault();
+                    pickConnectorEndpoint(frame.id);
+                    return;
+                  }
+                  if (tool !== "select") {
+                    // A creation tool pressed on the frame: the
+                    // frame is empty board for this purpose, so
+                    // the press creates or draws inside it.
+                    handleEmptyCanvasPress(event);
+                    return;
+                  }
+                  selectFrame(frame.id);
+                  startFrameDrag(event, frame);
+                }}
+                onPointerMove={(event) => {
+                  moveFrameDrag(event);
+                  // A shape or frame draw started inside this
+                  // frame captures the pointer here, so its moves
+                  // arrive on the frame, not the board.
+                  moveDraw(event);
+                  moveFrameDraw(event);
+                }}
+                onPointerUp={(event) => {
+                  endFrameDrag(event);
+                  endDraw(event);
+                  endFrameDraw(event);
+                }}
+                onPointerCancel={(event) => {
+                  endFrameDrag(event);
+                  endDraw(event);
+                  endFrameDraw(event);
+                }}
+                style={{
+                  left: frame.x,
+                  top: frame.y,
+                  width: frame.w,
+                  height: frame.h,
+                  border: `2px solid ${stroke}`,
+                  // A selected frame — or the pending source of a
+                  // connector — gets an accent outline.
+                  ...(isSelected || isConnectorSource
+                    ? { boxShadow: "0 0 0 2px var(--color-accent)" }
+                    : undefined),
+                }}
+              >
+                {isSelected && (
+                  <>
+                    <button
+                      type="button"
+                      className="note-delete"
+                      onClick={() => deleteFrame(frame.id)}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      aria-label="Delete frame"
+                      title="Delete frame (Delete key)"
+                    >
+                      ×
+                    </button>
+                    <div
+                      className="note-resize"
+                      onPointerDown={(event) => startFrameResize(event, frame)}
+                      onPointerMove={moveFrameResize}
+                      onPointerUp={endFrameResize}
+                      aria-label="Resize frame"
+                    />
+                  </>
+                )}
+              </div>
+            );
+          })}
+          <svg className="connector-svg" aria-hidden="true">
+            <defs>
+              {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
+                <marker
+                  key={color}
+                  id={`connector-arrow-${color}`}
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="6"
+                  refY="3"
+                  orient="auto"
+                >
+                  <path d="M0,0 L0,6 L7,3 z" fill={SHAPE_STROKE_COLORS[color]} />
+                </marker>
+              ))}
+            </defs>
+            {connectors.map((connector) => {
+              const from = boxesById.get(connector.fromId);
+              const to = boxesById.get(connector.toId);
+              // An endpoint that is gone (a stale import) draws
+              // nothing — a connector never points at nowhere.
+              if (!from || !to) return null;
+              const ends = connectorEndpoints(from, to);
+              const stroke = SHAPE_STROKE_COLORS[connector.color];
+              const isSelected = selectedConnectorId === connector.id;
+              return (
+                <g key={connector.id}>
+                  {/* A wide transparent line, so the thin visible
+                      line is easy to click. */}
+                  <line
+                    className="connector-hit"
+                    x1={ends.x1}
+                    y1={ends.y1}
+                    x2={ends.x2}
+                    y2={ends.y2}
+                    onPointerDown={(event) => {
+                      if (event.button !== 0 || tool === "connector") return;
+                      selectConnector(connector.id);
+                    }}
+                  />
+                  <line
+                    className="connector-line"
+                    x1={ends.x1}
+                    y1={ends.y1}
+                    x2={ends.x2}
+                    y2={ends.y2}
+                    stroke={stroke}
+                    strokeWidth={isSelected ? 4 : 2.5}
+                    markerEnd={`url(#connector-arrow-${connector.color})`}
+                    onPointerDown={(event) => {
+                      if (event.button !== 0 || tool === "connector") return;
+                      selectConnector(connector.id);
+                    }}
+                  />
+                </g>
+              );
+            })}
+          </svg>
+          {selectedConnectorMid && selectedConnector && (
+            <button
+              type="button"
+              className="connector-delete"
+              style={{ left: selectedConnectorMid.x, top: selectedConnectorMid.y }}
+              onClick={() => deleteConnector(selectedConnector.id)}
+              onPointerDown={(event) => event.stopPropagation()}
+              aria-label="Delete connector"
+              title="Delete connector (Delete key)"
+            >
+              ×
+            </button>
+          )}
           {shapes.map((shape) => {
             const selectors = selectorsByShape.get(shape.id) ?? [];
             const stroke = SHAPE_STROKE_COLORS[shape.color];
+            // The outline for a selected shape: a selector's color,
+            // or the accent when it is the pending source of a
+            // connector being drawn.
+            const isConnectorSource = connectorPendingFromId === shape.id;
+            const outline = isConnectorSource
+              ? "0 0 0 2px var(--color-accent)"
+              : selectors.length > 0
+                ? `0 0 0 2px ${selectors[0].color}`
+                : null;
             // A zero-size box would collapse the SVG, so the
             // rendered box is at least 1px in each direction.
             const boxW = Math.max(1, shape.w);
@@ -2248,7 +3020,13 @@ function Board({
                 data-shape-id={shape.id}
                 data-shape-kind={shape.kind}
                 onPointerDown={(event) => {
-                  if (tool !== "select" || event.button !== 0) return;
+                  if (event.button !== 0) return;
+                  if (tool === "connector") {
+                    event.preventDefault();
+                    pickConnectorEndpoint(shape.id);
+                    return;
+                  }
+                  if (tool !== "select") return;
                   selectShape(shape.id);
                   startShapeDrag(event, shape);
                 }}
@@ -2261,9 +3039,7 @@ function Board({
                   height: boxH,
                   // A selected shape gets an outline in the first
                   // selector's color, like a selected note.
-                  ...(selectors.length > 0
-                    ? { boxShadow: `0 0 0 2px ${selectors[0].color}` }
-                    : undefined),
+                  ...(outline ? { boxShadow: outline } : undefined),
                   ...(shape.kind === "rect" || shape.kind === "ellipse"
                     ? {
                         background: NOTE_COLORS[shape.color],
@@ -2360,12 +3136,29 @@ function Board({
           })}
           {notes.map((note) => {
           const selectors = selectorsByNote.get(note.id) ?? [];
+          // The outline for a selected note: a selector's color,
+          // or the accent when it is the pending source of a
+          // connector being drawn.
+          const isConnectorSource = connectorPendingFromId === note.id;
+          const outline = isConnectorSource
+            ? "0 0 0 2px var(--color-accent)"
+            : selectors.length > 0
+              ? `0 0 0 2px ${selectors[0].color}`
+              : null;
           return (
             <div
               key={note.id}
               className="note"
               onPointerDown={(event) => {
-                if (event.button === 0) selectNote(note.id);
+                if (event.button !== 0) return;
+                if (tool === "connector") {
+                  // Picking an endpoint, not editing: keep the
+                  // press from focusing the textarea.
+                  event.preventDefault();
+                  pickConnectorEndpoint(note.id);
+                  return;
+                }
+                selectNote(note.id);
               }}
               style={{
                 left: note.x,
@@ -2375,9 +3168,9 @@ function Board({
                 background: NOTE_COLORS[note.color],
                 // A selected note gets an outline in the first
                 // selector's color, on top of the usual shadow.
-                ...(selectors.length > 0
+                ...(outline
                   ? {
-                      boxShadow: `0 0 0 2px ${selectors[0].color}, var(--shadow-card)`,
+                      boxShadow: `${outline}, var(--shadow-card)`,
                     }
                   : undefined),
               }}
@@ -2429,13 +3222,30 @@ function Board({
         })}
         {texts.map((textBox) => {
           const selectors = selectorsByText.get(textBox.id) ?? [];
+          // The outline for a selected text box: a selector's
+          // color, or the accent when it is the pending source
+          // of a connector being drawn.
+          const isConnectorSource = connectorPendingFromId === textBox.id;
+          const outline = isConnectorSource
+            ? "0 0 0 2px var(--color-accent)"
+            : selectors.length > 0
+              ? `0 0 0 2px ${selectors[0].color}`
+              : null;
           return (
             <div
               key={textBox.id}
               className="text-box"
               data-text-id={textBox.id}
               onPointerDown={(event) => {
-                if (event.button === 0) selectTextBox(textBox.id);
+                if (event.button !== 0) return;
+                if (tool === "connector") {
+                  // Picking an endpoint, not editing: keep the
+                  // press from focusing the textarea.
+                  event.preventDefault();
+                  pickConnectorEndpoint(textBox.id);
+                  return;
+                }
+                selectTextBox(textBox.id);
               }}
               style={{
                 left: textBox.x,
@@ -2446,9 +3256,7 @@ function Board({
                 fontSize: FONT_SIZE_PX[textBox.fontSize],
                 // A selected text box gets an outline in the
                 // first selector's color, like a selected note.
-                ...(selectors.length > 0
-                  ? { boxShadow: `0 0 0 2px ${selectors[0].color}` }
-                  : undefined),
+                ...(outline ? { boxShadow: outline } : undefined),
               }}
             >
               {selectors.length > 0 && (
@@ -2496,11 +3304,60 @@ function Board({
             </div>
           );
         })}
+        {/* Frame titles live in their own layer above the items, so
+            a note placed over a frame's top-left corner never hides
+            its name. Each title sits at its frame's top-left, inset
+            by FRAME_TITLE_INSET, and never runs past the frame's far
+            edge. The title is still an input — click it to rename. */}
+        {frames.map((frame) => {
+          // The title on screen: the draft while the user is
+          // typing, the shared title otherwise.
+          const titleShown =
+            frameTitleDraft?.id === frame.id ? frameTitleDraft.value : frame.title;
+          return (
+            <input
+              key={frame.id}
+              className="frame-title"
+              value={titleShown}
+              style={{
+                left: frame.x + FRAME_TITLE_INSET,
+                top: frame.y + FRAME_TITLE_INSET,
+                maxWidth: Math.max(60, frame.w - 2 * FRAME_TITLE_INSET),
+                background: NOTE_COLORS[frame.color],
+              }}
+              onChange={(event) =>
+                setFrameTitleDraft({ id: frame.id, value: event.target.value })
+              }
+              onBlur={() => {
+                if (frameTitleDraft?.id === frame.id) {
+                  renameFrame(frame.id, frameTitleDraft.value);
+                  setFrameTitleDraft(null);
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.currentTarget.blur();
+                } else if (event.key === "Escape") {
+                  // Cancel the edit, not the title: the draft
+                  // is dropped, so the blur below commits
+                  // nothing.
+                  setFrameTitleDraft(null);
+                  event.currentTarget.blur();
+                }
+              }}
+              onFocus={() => selectFrame(frame.id)}
+              onPointerDown={(event) => event.stopPropagation()}
+              aria-label="Frame title"
+              maxLength={60}
+              size={Math.max(4, titleShown.length + 1)}
+            />
+          );
+        })}
         </div>
         {/* The empty state sits on the viewport, not the canvas
             layer, so it stays centred no matter where the board
             is panned or how far it is zoomed. */}
-        {notes.length === 0 && shapes.length === 0 && texts.length === 0 && (
+        {notes.length === 0 && shapes.length === 0 && texts.length === 0 && frames.length === 0 && (
           <div className="board-empty">
             {status === "connected" ? (
               <>

@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
-import { createShape, createTextBox, type Note, type Shape, type TextBox } from "@syncboard/shared";
+import {
+  createConnector,
+  createFrame,
+  createShape,
+  createTextBox,
+  type Connector,
+  type Frame,
+  type Note,
+  type Shape,
+  type TextBox,
+} from "@syncboard/shared";
 import {
   applyBoardExport,
   boardExportToJson,
@@ -28,6 +38,13 @@ function sampleBoard(): BoardExport {
     createTextBox("t1", 700, 120, 240, 80, "large", "blue", "Hello board"),
     createTextBox("t2", 700, 300, 240, 80, "small", "purple", "Small print"),
   ];
+  const frames: Frame[] = [
+    createFrame("f1", 50, 100, 600, 400, "blue", "Sprint planning"),
+  ];
+  const connectors: Connector[] = [
+    createConnector("c1", "n1", "n2", "green"),
+    createConnector("c2", "s1", "f1", "blue"),
+  ];
   return {
     version: 1,
     exportedAt: "2026-11-12T00:00:00.000Z",
@@ -35,6 +52,8 @@ function sampleBoard(): BoardExport {
     notes,
     shapes,
     texts,
+    frames,
+    connectors,
   };
 }
 
@@ -95,6 +114,26 @@ describe("exportDocToBoard / applyBoardExport", () => {
     expect(restored.notes).toEqual(sampleBoard().notes);
     expect(restored.shapes).toEqual(sampleBoard().shapes);
     expect(restored.texts).toEqual(sampleBoard().texts);
+    expect(restored.frames).toEqual(sampleBoard().frames);
+    expect(restored.connectors).toEqual(sampleBoard().connectors);
+  });
+
+  it("imports an old export without frames or connectors", () => {
+    // Exports made before frames and connectors existed have no
+    // such lists. They must still import — with empty frames and
+    // connectors — instead of being rejected.
+    const old = {
+      version: 1,
+      exportedAt: "2026-11-12T00:00:00.000Z",
+      boardId: "syncboard-demo",
+      notes: [{ id: "n1", x: 0, y: 0, w: 200, h: 200, color: "yellow", text: "kept" }],
+      shapes: [],
+      texts: [],
+    };
+    const parsed = parseBoardExport(JSON.stringify(old));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.frames).toEqual([]);
+    expect(parsed!.connectors).toEqual([]);
   });
 
   it("replaces the board instead of merging with it", () => {
@@ -108,12 +147,16 @@ describe("exportDocToBoard / applyBoardExport", () => {
       notes: [{ id: "only", x: 0, y: 0, w: 200, h: 200, color: "green", text: "Only me" }],
       shapes: [],
       texts: [],
+      frames: [],
+      connectors: [],
     };
     applyBoardExport(doc, smaller, ORIGIN);
     const restored = exportDocToBoard(doc, "syncboard-demo");
     expect(restored.notes).toEqual(smaller.notes);
     expect(restored.shapes).toEqual([]);
     expect(restored.texts).toEqual([]);
+    expect(restored.frames).toEqual([]);
+    expect(restored.connectors).toEqual([]);
   });
 
   it("keeps pen points through the round-trip", () => {
