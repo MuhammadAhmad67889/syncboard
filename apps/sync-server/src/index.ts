@@ -233,9 +233,10 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
 }
 
 // Boards API: GET /boards lists every board, POST /boards
-// creates one, DELETE /boards/:id deletes one. Same CORS
-// approach as /auth (see above) — the web app runs on another
-// origin in dev, and these endpoints are dev-only alongside it.
+// creates one, PATCH /boards/:id renames one, DELETE
+// /boards/:id deletes one. Same CORS approach as /auth (see
+// above) — the web app runs on another origin in dev, and
+// these endpoints are dev-only alongside it.
 // Returns true when the request was answered here.
 async function handleBoardsRequest(
   request: IncomingMessage,
@@ -247,7 +248,7 @@ async function handleBoardsRequest(
   }
   const cors = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
   if (request.method === "OPTIONS") {
@@ -285,6 +286,35 @@ async function handleBoardsRequest(
     }
     console.log(`[boards] created "${created.name}" (${created.id})`);
     json(201, { board: created });
+    return true;
+  }
+  if (request.method === "PATCH" && url.pathname.startsWith("/boards/")) {
+    const id = decodeURIComponent(url.pathname.slice("/boards/".length));
+    let body: unknown;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      json(400, { error: "Request body is not valid JSON." });
+      return true;
+    }
+    const name = (body as { name?: unknown } | null)?.name;
+    if (typeof name !== "string" || name.trim() === "") {
+      json(400, { error: "A board name is required." });
+      return true;
+    }
+    let renamed: BoardMeta | null;
+    try {
+      renamed = boardStore.renameBoard(id, name);
+    } catch (error) {
+      json(400, { error: error instanceof Error ? error.message : "Could not rename board." });
+      return true;
+    }
+    if (!renamed) {
+      json(404, { error: "Board not found." });
+      return true;
+    }
+    console.log(`[boards] renamed "${id}" to "${renamed.name}"`);
+    json(200, { board: renamed });
     return true;
   }
   if (request.method === "DELETE" && url.pathname.startsWith("/boards/")) {

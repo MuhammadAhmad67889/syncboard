@@ -111,6 +111,13 @@ export interface BoardStore {
   // document itself is still empty here — the starter notes are
   // seeded on first load, by the existing load path.
   createBoard(name: string): BoardMeta;
+  // Renames a board and returns it. Throws "Board name must
+  // not be empty." for a blank name, like createBoard.
+  // Returns null when the board does not exist or was deleted.
+  // The default board renames like any other — only deleting
+  // it is forbidden, because clients always need a board to
+  // land on.
+  renameBoard(boardId: string, name: string): BoardMeta | null;
   // Deletes a board's document and its list entry, and leaves a
   // tombstone so it can never be re-saved or re-seeded. Returns
   // false when the board does not exist. The default board is
@@ -164,6 +171,12 @@ export function createBoardStore(dbPath: string): BoardStore {
     "SELECT board_id, name, created_at FROM board_meta ORDER BY created_at ASC, rowid ASC",
   );
   const metaStatement = db.prepare("SELECT board_id FROM board_meta WHERE board_id = ?");
+  const selectMetaStatement = db.prepare(
+    "SELECT board_id, name, created_at FROM board_meta WHERE board_id = ?",
+  );
+  const updateMetaStatement = db.prepare(
+    "UPDATE board_meta SET name = ? WHERE board_id = ?",
+  );
   const insertMetaStatement = db.prepare(
     "INSERT OR IGNORE INTO board_meta (board_id, name, created_at) VALUES (?, ?, ?)",
   );
@@ -248,6 +261,22 @@ export function createBoardStore(dbPath: string): BoardStore {
         return { id, name: trimmed, createdAt };
       }
       throw new Error("Could not pick a free board id — try again.");
+    },
+    renameBoard(boardId: string, name: string): BoardMeta | null {
+      const trimmed = name.trim();
+      if (trimmed === "") {
+        throw new Error("Board name must not be empty.");
+      }
+      // A deleted board stays deleted, and a board that never
+      // existed has no row — both read as "not found" to the
+      // caller, which answers 404.
+      if (isDeleted(boardId)) return null;
+      const row = selectMetaStatement.get(boardId) as
+        | { board_id: string; name: string; created_at: string }
+        | undefined;
+      if (!row) return null;
+      updateMetaStatement.run(trimmed, boardId);
+      return { id: row.board_id, name: trimmed, createdAt: row.created_at };
     },
     deleteBoard(boardId: string): boolean {
       // The default board is the fallback every client lands on,
