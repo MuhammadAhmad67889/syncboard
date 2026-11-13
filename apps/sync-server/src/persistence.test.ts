@@ -84,6 +84,46 @@ describe("createBoard / listBoards", () => {
   });
 });
 
+describe("renameBoard", () => {
+  it("renames a board and keeps its id and created date", () => {
+    const created = store.createBoard("Design");
+    const renamed = store.renameBoard(created.id, "Redesign");
+    expect(renamed).toEqual({ id: created.id, name: "Redesign", createdAt: created.createdAt });
+    expect(store.listBoards().find((board) => board.id === created.id)?.name).toBe("Redesign");
+  });
+
+  it("trims the name it stores", () => {
+    const created = store.createBoard("Design");
+    expect(store.renameBoard(created.id, "  Redesign  ")?.name).toBe("Redesign");
+  });
+
+  it("rejects a blank name", () => {
+    const created = store.createBoard("Design");
+    expect(() => store.renameBoard(created.id, "   ")).toThrow("Board name must not be empty.");
+    expect(() => store.renameBoard(created.id, "")).toThrow("Board name must not be empty.");
+  });
+
+  it("returns null for a board that does not exist", () => {
+    expect(store.renameBoard("board-nope-123456", "Redesign")).toBeNull();
+  });
+
+  it("returns null for a board that was deleted", () => {
+    const created = store.createBoard("Design");
+    expect(store.deleteBoard(created.id)).toBe(true);
+    expect(store.renameBoard(created.id, "Redesign")).toBeNull();
+  });
+
+  it("renames the default board like any other", () => {
+    const renamed = store.renameBoard(DEFAULT_BOARD_ID, "Home");
+    expect(renamed).toEqual({
+      id: DEFAULT_BOARD_ID,
+      name: "Home",
+      createdAt: expect.any(String),
+    });
+    expect(store.listBoards()[0].name).toBe("Home");
+  });
+});
+
 describe("save / load", () => {
   it("round-trips a saved document", () => {
     const board = store.createBoard("Design");
