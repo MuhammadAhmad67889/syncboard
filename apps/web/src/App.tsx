@@ -79,6 +79,80 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: "pen", label: "Pen" },
 ];
 
+// Hand-drawn 16px stroke icons for the toolbar, in the button's
+// own colour. No icon library: each icon is a few paths.
+const TOOL_ICONS: Record<Tool, React.ReactNode> = {
+  select: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M4.5 2.5 L4.5 13 L7 10.6 L8.6 14 L10.2 13.2 L8.6 9.8 L12 9.8 Z" />
+    </svg>
+  ),
+  note: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 2.5 h6.5 L13.5 5.5 v8 H4 Z" />
+      <path d="M10.5 2.5 v3 h3" />
+    </svg>
+  ),
+  text: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 4.5 h10" />
+      <path d="M8 4.5 v9" />
+    </svg>
+  ),
+  rect: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="10" height="8" rx="1" />
+    </svg>
+  ),
+  ellipse: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <ellipse cx="8" cy="8" rx="5.5" ry="4" />
+    </svg>
+  ),
+  line: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 12 L12 4" />
+      <path d="M12 4 L9 4 M12 4 L12 7" />
+    </svg>
+  ),
+  pen: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M11.5 2.5 L13.5 4.5 L6.5 11.5 L3.5 12.5 L4.5 9.5 Z" />
+    </svg>
+  ),
+};
+
+// The same hand-drawn style for the undo, redo, export, and
+// import buttons.
+const ACTION_ICONS = {
+  undo: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6.5 4 L3 7.5 L6.5 11" />
+      <path d="M3 7.5 H10 a3 3 0 0 1 0 6 H8" />
+    </svg>
+  ),
+  redo: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9.5 4 L13 7.5 L9.5 11" />
+      <path d="M13 7.5 H6 a3 3 0 0 0 0 6 H8" />
+    </svg>
+  ),
+  download: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 2.5 v8" />
+      <path d="M5 7.5 L8 10.5 L11 7.5" />
+      <path d="M3 13.5 h10" />
+    </svg>
+  ),
+  upload: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 10.5 v-8" />
+      <path d="M5 5.5 L8 2.5 L11 5.5" />
+      <path d="M3 13.5 h10" />
+    </svg>
+  ),
+} as const;
+
 // Throttle: about 30 cursor updates per second. Pointermove
 // fires far more often than that, and every update is a message
 // to the server.
@@ -367,11 +441,11 @@ export default function App() {
               autoComplete={mode === "login" ? "current-password" : "new-password"}
             />
           </label>
-          {authError && (
-            <p className="picker-error" role="alert">
-              {authError}
-            </p>
-          )}
+          {/* Always rendered so the form never jumps when a
+              sign-in fails; the line is reserved in CSS. */}
+          <p className="picker-error" role="alert">
+            {authError ?? ""}
+          </p>
           <button type="submit" className="picker-submit" disabled={authBusy}>
             {mode === "login" ? "Log in" : "Create account"}
           </button>
@@ -396,7 +470,7 @@ export default function App() {
         {authNotice && <p className="picker-hint">{authNotice}</p>}
         <p className="picker-hint">
           Usernames are 3–20 characters, letters, numbers, underscores, and hyphens only;
-          passwords are at least 8 characters. The demo needs no account — open the board in two
+          passwords are at least 8 characters. The demo needs no account. Open the board in two
           tabs, one signed in and one on the demo, to see live sync.
         </p>
       </main>
@@ -1961,6 +2035,7 @@ function Board({
                       : `Drag on empty canvas to draw a ${item.label.toLowerCase()}`
               }
             >
+              {TOOL_ICONS[item.id]}
               {item.label}
             </button>
           ))}
@@ -2003,6 +2078,7 @@ function Board({
           disabled={!canUndo}
           title="Undo (Ctrl+Z)"
         >
+          {ACTION_ICONS.undo}
           Undo
         </button>
         <button
@@ -2012,6 +2088,7 @@ function Board({
           disabled={!canRedo}
           title="Redo (Ctrl+Shift+Z)"
         >
+          {ACTION_ICONS.redo}
           Redo
         </button>
         <span className="toolbar-divider" aria-hidden="true" />
@@ -2022,6 +2099,7 @@ function Board({
             onClick={exportPng}
             title="Download the board as a PNG image"
           >
+            {ACTION_ICONS.download}
             Export PNG
           </button>
           <button
@@ -2030,6 +2108,7 @@ function Board({
             onClick={exportJson}
             title="Download the board as a JSON file"
           >
+            {ACTION_ICONS.download}
             Export JSON
           </button>
           <button
@@ -2038,6 +2117,7 @@ function Board({
             onClick={() => importInputRef.current?.click()}
             title="Replace this board with a board from a JSON file"
           >
+            {ACTION_ICONS.upload}
             Import JSON
           </button>
           <input
@@ -2188,7 +2268,7 @@ function Board({
                     ? {
                         background: NOTE_COLORS[shape.color],
                         border: `2px solid ${stroke}`,
-                        borderRadius: shape.kind === "ellipse" ? "50%" : 8,
+                        borderRadius: shape.kind === "ellipse" ? "50%" : "var(--radius-input)",
                       }
                     : undefined),
                 }}
@@ -2297,7 +2377,7 @@ function Board({
                 // selector's color, on top of the usual shadow.
                 ...(selectors.length > 0
                   ? {
-                      boxShadow: `0 0 0 2px ${selectors[0].color}, 0 2px 8px rgb(15 23 42 / 0.15)`,
+                      boxShadow: `0 0 0 2px ${selectors[0].color}, var(--shadow-card)`,
                     }
                   : undefined),
               }}
@@ -2416,10 +2496,31 @@ function Board({
             </div>
           );
         })}
-        {notes.length === 0 && shapes.length === 0 && texts.length === 0 && (
-          <p className="board-empty">Loading notes…</p>
-        )}
         </div>
+        {/* The empty state sits on the viewport, not the canvas
+            layer, so it stays centred no matter where the board
+            is panned or how far it is zoomed. */}
+        {notes.length === 0 && shapes.length === 0 && texts.length === 0 && (
+          <div className="board-empty">
+            {status === "connected" ? (
+              <>
+                <p className="board-empty-title">This board is empty.</p>
+                <p className="board-empty-line">
+                  Add a note, draw a shape, or write some text to start.
+                </p>
+              </>
+            ) : status === "disconnected" ? (
+              <>
+                <p className="board-empty-title">Can&rsquo;t reach the board.</p>
+                <p className="board-empty-line">
+                  Check your connection. The board will load when it reconnects.
+                </p>
+              </>
+            ) : (
+              <p className="board-empty-line">Loading notes…</p>
+            )}
+          </div>
+        )}
         {presence.map((person) =>
           person.cursor ? (
             <div
