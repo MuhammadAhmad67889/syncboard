@@ -362,6 +362,131 @@ export function connectorEndpoints(
   return best;
 }
 
+// One comment thread pinned to the board: who wrote it, what
+// it says, when it was written (an ISO timestamp), where its pin
+// sits in board pixels, and whether it has been resolved. A
+// thread holds one comment — there are no replies. Resolved
+// threads stay in the panel; only their pins leave the canvas.
+export interface Comment {
+  id: string;
+  x: number;
+  y: number;
+  author: string;
+  text: string;
+  createdAt: string;
+  resolved: boolean;
+}
+
+// Builds a comment thread. The timestamp defaults to now, so
+// the caller only passes one when it already has it.
+export function createComment(
+  id: string,
+  x: number,
+  y: number,
+  author: string,
+  text: string,
+  createdAt: string = new Date().toISOString(),
+  resolved = false,
+): Comment {
+  return { id, x, y, author, text, createdAt, resolved };
+}
+
+// The threads newest first, for the comments panel. A fresh
+// array, so the caller's order is untouched.
+export function sortCommentsNewestFirst(comments: Comment[]): Comment[] {
+  return [...comments].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+// One dot vote on a board item: which item it sits on, and
+// who placed it. A vote has its own id, so one person can put
+// several dots on the same item — each click is one vote — up
+// to the dots the session allows them. The session is the
+// voting session the dot was placed in (0 for dots placed
+// before sessions were numbered): old dots stay visible on the
+// items, but only the current session's dots count toward a
+// person's allocation.
+export interface Vote {
+  id: string;
+  itemId: string;
+  userId: string;
+  userName: string;
+  session: number;
+}
+
+// Builds a vote. The caller picks the id, so the same vote is
+// never built twice with different ids.
+export function createVote(
+  id: string,
+  itemId: string,
+  userId: string,
+  userName: string,
+  session: number,
+): Vote {
+  return { id, itemId, userId, userName, session };
+}
+
+// One dot-voting session on a board: whether it is open, how
+// many dots each person gets, and who started it. Ending a
+// session closes it but leaves the votes where they are —
+// frozen, visible, and clearable. The session number counts
+// up from 1 each time a session starts, so a vote knows which
+// session it belongs to.
+export interface VotingSession {
+  active: boolean;
+  dotsPerPerson: number;
+  startedBy: string;
+  startedByName: string;
+  session: number;
+}
+
+// The dots each person gets when a session starts, unless the
+// starter picks another number.
+export const DEFAULT_DOTS_PER_PERSON = 3;
+
+// The numbers the starter can pick from.
+export const DOTS_PER_PERSON_OPTIONS = [1, 2, 3, 5, 10] as const;
+
+// The dots placed in one session only. The caller passes the
+// session number, so old dots — from an earlier session, or
+// from before sessions were numbered — never eat into the
+// current session's allocation.
+export function votesInSession(votes: Vote[], session: number): Vote[] {
+  return votes.filter((vote) => vote.session === session);
+}
+
+// How many dots one person has placed in this session's votes.
+// The caller passes only the current session's votes (see
+// votesInSession), so the count is per session, not all time.
+export function countUserVotes(votes: Vote[], userId: string): number {
+  let count = 0;
+  for (const vote of votes) {
+    if (vote.userId === userId) count += 1;
+  }
+  return count;
+}
+
+// How many dots sit on one item, from everyone.
+export function countItemVotes(votes: Vote[], itemId: string): number {
+  let count = 0;
+  for (const vote of votes) {
+    if (vote.itemId === itemId) count += 1;
+  }
+  return count;
+}
+
+// How many dots one person still has to place. Never below
+// zero, so a stale count cannot grant an extra dot.
+export function remainingDots(votes: Vote[], userId: string, dotsPerPerson: number): number {
+  return Math.max(0, dotsPerPerson - countUserVotes(votes, userId));
+}
+
+// Whether one person may place another dot: they still have
+// dots left. The caller checks the session is open — this only
+// counts dots.
+export function canPlaceVote(votes: Vote[], userId: string, dotsPerPerson: number): boolean {
+  return remainingDots(votes, userId, dotsPerPerson) > 0;
+}
+
 // The default size for a newly created note.
 export const DEFAULT_NOTE_SIZE = { w: 200, h: 200 } as const;
 
