@@ -39,6 +39,25 @@ export async function createBoard(baseUrl: string, name: string): Promise<BoardM
   return data.board;
 }
 
+// Renames a board and returns it with the new name. Throws
+// when the server refuses (a blank name) or the board is gone.
+export async function renameBoard(
+  baseUrl: string,
+  id: string,
+  name: string,
+): Promise<BoardMeta> {
+  const response = await fetch(`${baseUrl}/boards/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const data = (await response.json()) as { board?: BoardMeta; error?: string };
+  if (!response.ok || !data.board) {
+    throw new Error(data.error ?? `Could not rename board (${response.status}).`);
+  }
+  return data.board;
+}
+
 // Deletes a board. Throws when the server refuses (the default
 // board) or the board is already gone.
 export async function deleteBoard(baseUrl: string, id: string): Promise<void> {
@@ -51,7 +70,7 @@ export async function deleteBoard(baseUrl: string, id: string): Promise<void> {
   }
 }
 
-// The default board can never be deleted — the switcher hides
+// The default board can never be deleted — the sidebar hides
 // its delete button, and the server refuses it too.
 export function canDeleteBoard(id: string): boolean {
   return id !== DEFAULT_BOARD_ID;
