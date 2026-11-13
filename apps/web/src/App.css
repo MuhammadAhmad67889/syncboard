@@ -715,6 +715,102 @@
   pointer-events: none;
 }
 
+/* --- Frames --- */
+/* A named section on the board. The fill stays paper — the
+   frame's color shows in its border and its title pill — and
+   the frame sits behind notes, shapes, and text, so content
+   inside it stays on top. */
+.frame {
+  position: absolute;
+  background: var(--color-paper);
+  border-radius: var(--radius-input);
+  cursor: grab;
+  touch-action: none;
+}
+
+.frame:active {
+  cursor: grabbing;
+}
+
+/* The title is an input that reads as a label: a pale pill in
+   the frame's color, DM Mono, no border. It only looks like a
+   field while the user is typing in it. Titles render in their
+   own layer above the items (see App.tsx), so their position and
+   width come from the layer, not from here. */
+.frame-title {
+  position: absolute;
+  padding: var(--space-2xs) var(--space-xs);
+  border: 0;
+  border-radius: var(--radius-pill);
+  outline: 0;
+  color: var(--color-ink);
+  font-family: var(--font-outlier);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.frame-title:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+/* --- Connectors --- */
+/* One overlay SVG for every connector, sitting between the
+   frames and the items. It never blocks clicks on empty board —
+   only the lines themselves are clickable. Lines can run past
+   the viewport (an item off-screen still connects), so the
+   layer is not clipped. */
+.connector-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.connector-line {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+/* The invisible hit area around a connector line, so the thin
+   line is easy to grab. */
+.connector-hit {
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+}
+
+/* The delete button for the selected connector, at the line's
+   midpoint. The same round key as a note's delete button, but
+   centred on a point instead of pinned to a corner. */
+.connector-delete {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-lg);
+  height: var(--space-lg);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--color-paper) 85%, transparent);
+  color: var(--color-error);
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+
+@media (hover: hover) {
+  .connector-delete:hover {
+    background: var(--color-paper);
+  }
+}
+
 /* --- Sticky notes --- */
 .note {
   position: absolute;

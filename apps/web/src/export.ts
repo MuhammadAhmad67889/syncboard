@@ -4,6 +4,9 @@ import {
   NOTE_COLORS,
   asShapeKind,
   asTextFontSize,
+  connectorEndpoints,
+  type Connector,
+  type Frame,
   type Note,
   type NoteColor,
   type Shape,
@@ -11,14 +14,17 @@ import {
 } from "@syncboard/shared";
 import { buildShapeMap, readShape, SHAPE_STROKE_COLORS } from "./shapes";
 import { buildTextMap, readTextBox, TEXT_COLORS } from "./texts";
+import { buildFrameMap, readFrame } from "./frames";
+import { buildConnectorMap, readConnector } from "./connectors";
 
 // ---------------------------------------------------------------------------
 // JSON export / import
 // ---------------------------------------------------------------------------
 
-// The whole board as a plain JSON object: every note, shape, and
-// text box with all of its fields. version lets a future format
-// change be detected instead of silently misread.
+// The whole board as a plain JSON object: every note, shape,
+// text box, frame, and connector with all of its fields. version
+// lets a future format change be detected instead of silently
+// misread.
 export interface BoardExport {
   version: 1;
   exportedAt: string;
@@ -26,6 +32,8 @@ export interface BoardExport {
   notes: Note[];
   shapes: Shape[];
   texts: TextBox[];
+  frames: Frame[];
+  connectors: Connector[];
 }
 
 // Serializes a board to a JSON string, ready to download.
@@ -97,6 +105,29 @@ function parseTextBox(value: unknown): TextBox | null {
   };
 }
 
+function parseFrame(value: unknown): Frame | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  return {
+    id: value.id,
+    x: asNumber(value.x, 0),
+    y: asNumber(value.y, 0),
+    w: asNumber(value.w, 0),
+    h: asNumber(value.h, 0),
+    color: asNoteColor(value.color),
+    title: asString(value.title, "Frame"),
+  };
+}
+
+function parseConnector(value: unknown): Connector | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  return {
+    id: value.id,
+    fromId: asString(value.fromId),
+    toId: asString(value.toId),
+    color: asNoteColor(value.color),
+  };
+}
+
 // Parses an imported JSON string into a board. Returns null when
 // the file is not a SyncBoard export at all (bad JSON, wrong
 // version, missing lists) — the caller shows an error instead of
@@ -128,6 +159,23 @@ export function parseBoardExport(json: string): BoardExport | null {
     const textBox = parseTextBox(entry);
     if (textBox) texts.push(textBox);
   }
+  // Frames and connectors are optional in the file: exports made
+  // before they existed have no such lists, and those files must
+  // still import — they just import with no frames or connectors.
+  const frames: Frame[] = [];
+  if (Array.isArray(parsed.frames)) {
+    for (const entry of parsed.frames) {
+      const frame = parseFrame(entry);
+      if (frame) frames.push(frame);
+    }
+  }
+  const connectors: Connector[] = [];
+  if (Array.isArray(parsed.connectors)) {
+    for (const entry of parsed.connectors) {
+      const connector = parseConnector(entry);
+      if (connector) connectors.push(connector);
+    }
+  }
   return {
     version: 1,
     exportedAt: asString(parsed.exportedAt, new Date().toISOString()),
@@ -135,6 +183,8 @@ export function parseBoardExport(json: string): BoardExport | null {
     notes,
     shapes,
     texts,
+    frames,
+    connectors,
   };
 }
 
@@ -160,9 +210,13 @@ export function applyBoardExport(doc: Y.Doc, data: BoardExport, origin: unknown)
     const notesMap = doc.getMap<Y.Map<unknown>>("notes");
     const shapesMap = doc.getMap<Y.Map<unknown>>("shapes");
     const textsMap = doc.getMap<Y.Map<unknown>>("texts");
+    const framesMap = doc.getMap<Y.Map<unknown>>("frames");
+    const connectorsMap = doc.getMap<Y.Map<unknown>>("connectors");
     notesMap.clear();
     shapesMap.clear();
     textsMap.clear();
+    framesMap.clear();
+    connectorsMap.clear();
     for (const note of data.notes) {
       notesMap.set(note.id, buildNoteMap(note));
     }
@@ -171,6 +225,12 @@ export function applyBoardExport(doc: Y.Doc, data: BoardExport, origin: unknown)
     }
     for (const textBox of data.texts) {
       textsMap.set(textBox.id, buildTextMap(textBox));
+    }
+    for (const frame of data.frames) {
+      framesMap.set(frame.id, buildFrameMap(frame));
+    }
+    for (const connector of data.connectors) {
+      connectorsMap.set(connector.id, buildConnectorMap(connector));
     }
   }, origin);
 }
@@ -201,6 +261,14 @@ export function exportDocToBoard(doc: Y.Doc, boardId: string): BoardExport {
   doc.getMap<Y.Map<unknown>>("texts").forEach((textMap, id) => {
     texts.push(readTextBox(id, textMap));
   });
+  const frames: Frame[] = [];
+  doc.getMap<Y.Map<unknown>>("frames").forEach((frameMap, id) => {
+    frames.push(readFrame(id, frameMap));
+  });
+  const connectors: Connector[] = [];
+  doc.getMap<Y.Map<unknown>>("connectors").forEach((connectorMap, id) => {
+    connectors.push(readConnector(id, connectorMap));
+  });
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -208,6 +276,8 @@ export function exportDocToBoard(doc: Y.Doc, boardId: string): BoardExport {
     notes,
     shapes,
     texts,
+    frames,
+    connectors,
   };
 }
 
@@ -231,7 +301,12 @@ interface Box {
   h: number;
 }
 
-function contentBounds(notes: Note[], shapes: Shape[], texts: TextBox[]): Box | null {
+function contentBounds(
+  notes: Note[],
+  shapes: Shape[],
+  texts: TextBox[],
+  frames: Frame[],
+): Box | null {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -245,6 +320,7 @@ function contentBounds(notes: Note[], shapes: Shape[], texts: TextBox[]): Box | 
   for (const note of notes) include(note);
   for (const shape of shapes) include(shape);
   for (const textBox of texts) include(textBox);
+  for (const frame of frames) include(frame);
   if (!Number.isFinite(minX)) return null;
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
@@ -395,6 +471,68 @@ function drawTextBox(
   }
 }
 
+// A frame is a labeled rectangle: a light tint of its color and
+// a stronger border in the same color. The title pill is drawn
+// separately, after the items — on the board the titles sit in a
+// layer above the items, and the export matches the board.
+function drawFrame(ctx: CanvasRenderingContext2D, frame: Frame, offsetX: number, offsetY: number): void {
+  const x = frame.x - offsetX;
+  const y = frame.y - offsetY;
+  drawRoundRect(ctx, x, y, frame.w, frame.h, 8);
+  ctx.fillStyle = NOTE_COLORS[frame.color];
+  ctx.globalAlpha = 0.25;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = SHAPE_STROKE_COLORS[frame.color];
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+// The title pill at a frame's top-left, measured from the text
+// so it fits the title.
+function drawFrameTitle(ctx: CanvasRenderingContext2D, frame: Frame, offsetX: number, offsetY: number): void {
+  const x = frame.x - offsetX;
+  const y = frame.y - offsetY;
+  ctx.font = "12px 'DM Mono', monospace";
+  ctx.textBaseline = "middle";
+  const textWidth = ctx.measureText(frame.title).width;
+  const pillW = textWidth + 20;
+  const pillH = 24;
+  const pillX = x + 12;
+  const pillY = y + 10;
+  drawRoundRect(ctx, pillX, pillY, pillW, pillH, 12);
+  ctx.fillStyle = NOTE_COLORS[frame.color];
+  ctx.fill();
+  ctx.fillStyle = "#0f172a";
+  ctx.fillText(frame.title, pillX + 10, pillY + pillH / 2 + 1);
+}
+
+// A connector is a line between the nearest edges of its two
+// items, with an arrowhead at the target end. A connector whose
+// endpoint is gone (a stale import) is skipped, not drawn to
+// nowhere.
+function drawConnector(
+  ctx: CanvasRenderingContext2D,
+  connector: Connector,
+  byId: Map<string, Box>,
+  offsetX: number,
+  offsetY: number,
+): void {
+  const from = byId.get(connector.fromId);
+  const to = byId.get(connector.toId);
+  if (!from || !to) return;
+  const ends = connectorEndpoints(from, to);
+  const stroke = SHAPE_STROKE_COLORS[connector.color];
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = stroke;
+  ctx.beginPath();
+  ctx.moveTo(ends.x1 - offsetX, ends.y1 - offsetY);
+  ctx.lineTo(ends.x2 - offsetX, ends.y2 - offsetY);
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  drawArrowHead(ctx, ends.x1 - offsetX, ends.y1 - offsetY, ends.x2 - offsetX, ends.y2 - offsetY);
+}
+
 // Renders the board onto a canvas, sized to fit the content with
 // a margin. The canvas is returned, not downloaded — the caller
 // turns it into a PNG blob and triggers the download.
@@ -402,9 +540,11 @@ export function renderBoardToCanvas(
   notes: Note[],
   shapes: Shape[],
   texts: TextBox[],
+  frames: Frame[] = [],
+  connectors: Connector[] = [],
 ): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
-  const bounds = contentBounds(notes, shapes, texts);
+  const bounds = contentBounds(notes, shapes, texts, frames);
   const ctx = canvas.getContext("2d");
   if (!ctx) return canvas;
   if (!bounds) {
@@ -430,9 +570,20 @@ export function renderBoardToCanvas(
   ctx.fillRect(0, 0, contentW, contentH);
   const offsetX = bounds.x - EXPORT_PADDING;
   const offsetY = bounds.y - EXPORT_PADDING;
+  // Frames first (they sit behind everything), then connectors
+  // (between items), then the items themselves, then the frame
+  // titles (above the items, as on the board).
+  for (const frame of frames) drawFrame(ctx, frame, offsetX, offsetY);
+  const byId = new Map<string, Box>();
+  for (const note of notes) byId.set(note.id, note);
+  for (const shape of shapes) byId.set(shape.id, shape);
+  for (const textBox of texts) byId.set(textBox.id, textBox);
+  for (const frame of frames) byId.set(frame.id, frame);
+  for (const connector of connectors) drawConnector(ctx, connector, byId, offsetX, offsetY);
   for (const shape of shapes) drawShape(ctx, shape, offsetX, offsetY);
   for (const note of notes) drawNote(ctx, note, offsetX, offsetY);
   for (const textBox of texts) drawTextBox(ctx, textBox, offsetX, offsetY);
+  for (const frame of frames) drawFrameTitle(ctx, frame, offsetX, offsetY);
   return canvas;
 }
 
