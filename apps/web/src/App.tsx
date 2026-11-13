@@ -3,8 +3,10 @@ import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import {
   DEFAULT_BOARD_ID,
+  DEFAULT_DOTS_PER_PERSON,
   DEFAULT_NOTE_SIZE,
   DEFAULT_TEXT_SIZE,
+  DOTS_PER_PERSON_OPTIONS,
   FONT_SIZE_PX,
   MIN_FRAME_SIZE,
   MIN_SHAPE_SIZE,
@@ -12,16 +14,24 @@ import {
   NOTE_COLORS,
   TEXT_FONT_SIZES,
   boxCentreInFrame,
+  canPlaceVote,
   connectorEndpoints,
+  countItemVotes,
+  createComment,
   createConnector,
   createFrame,
   createShape,
   createTextBox,
+  createVote,
   normalizeShapeBox,
   penPathFromPoints,
+  remainingDots,
   shapeBoxFromPoints,
+  sortCommentsNewestFirst,
+  votesInSession,
   type BoardMeta,
   type Box,
+  type Comment,
   type Connector,
   type Frame,
   type Note,
@@ -33,12 +43,15 @@ import {
   type ShapePoint,
   type TextBox,
   type TextFontSize,
+  type Vote,
+  type VotingSession,
 } from "@syncboard/shared";
 import {
   canDeleteBoard,
   createBoard,
   deleteBoard,
   fetchBoards,
+  renameBoard,
   resolveCurrentBoard,
 } from "./boards";
 import {
@@ -63,13 +76,45 @@ import {
   type ConnectorMap,
 } from "./connectors";
 import {
+  buildCommentMap,
+  formatCommentTime,
+  readComment,
+  type CommentMap,
+} from "./comments";
+import {
+  buildVoteMap,
+  readVote,
+  readVotingSession,
+  writeVotingSession,
+  type VoteMap,
+  type VotingMap,
+} from "./votes";
+import {
   applyBoardExport,
   boardExportToJson,
+  buildNoteMap,
   downloadBlob,
   parseBoardExport,
   renderBoardToCanvas,
   type BoardExport,
 } from "./export";
+import {
+  placeTemplate,
+  templateBounds,
+  TEMPLATES,
+  type BoardTemplate,
+} from "./templates";
+import {
+  MINIMAP_HEIGHT,
+  MINIMAP_WIDTH,
+  itemRect,
+  minimapBounds,
+  minimapScale,
+  minimapToBoard,
+  panToCentreBoardPoint,
+  viewportRect,
+} from "./minimap";
+import { buildBoardLink } from "./share";
 
 // The sync server address, from the environment.
 const SYNC_URL = import.meta.env.VITE_SYNC_URL ?? "ws://localhost:1234";
@@ -78,12 +123,13 @@ const SYNC_URL = import.meta.env.VITE_SYNC_URL ?? "ws://localhost:1234";
 // numbers (x, y, w, h), a color name, and a Y.Text for the text.
 type NoteMap = Y.Map<unknown>;
 
-// The active board tool, from the toolbar. Select moves and edits
+// The active board tool, from the tool rail. Select moves and edits
 // things; Note drops a sticky note; Text drops a text box; the
 // four shape tools draw shapes by dragging on empty canvas; Frame
 // draws a named section the same way; Connector joins two items
-// with an arrow.
-type Tool = "select" | "note" | "text" | "frame" | "connector" | ShapeKind;
+// with an arrow; Comment pins a comment thread to the canvas.
+// Vote places a dot on an item while a voting session is open.
+type Tool = "select" | "note" | "text" | "frame" | "connector" | "comment" | "vote" | ShapeKind;
 
 // One item a frame drag carries along: what it is, which one, and
 // where it started. Pen shapes also carry their points, because a
@@ -97,7 +143,7 @@ type FrameDragContent = {
   points?: ShapePoint[];
 };
 
-// The toolbar tools, in display order.
+// The tool-rail tools, in display order.
 const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: "select", label: "Select" },
   { id: "note", label: "Note" },
@@ -108,9 +154,11 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: "pen", label: "Pen" },
   { id: "connector", label: "Connector" },
   { id: "frame", label: "Frame" },
+  { id: "comment", label: "Comment" },
+  { id: "vote", label: "Vote" },
 ];
 
-// Hand-drawn 16px stroke icons for the toolbar, in the button's
+// Hand-drawn 16px stroke icons for the tool rail, in the button's
 // own colour. No icon library: each icon is a few paths.
 const TOOL_ICONS: Record<Tool, React.ReactNode> = {
   select: (
@@ -165,6 +213,21 @@ const TOOL_ICONS: Record<Tool, React.ReactNode> = {
   frame: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3" y="3" width="10" height="10" rx="1" strokeDasharray="3 2" />
+    </svg>
+  ),
+  // A comment is a speech bubble: a rounded box with a tail
+  // pointing at the spot it is pinned to.
+  comment: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 3.5 h10 v7 H8.5 L5.5 13.5 v-3 H3 Z" />
+      <path d="M5.5 6.5 h5 M5.5 8.5 h3" />
+    </svg>
+  ),
+  // A vote is a dot: one filled circle, like the dot a vote
+  // leaves on an item.
+  vote: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <circle cx="8" cy="8" r="5" />
     </svg>
   ),
 };
@@ -630,6 +693,24 @@ function BoardsApp({
     }
   }
 
+  // Renames a board and updates the list in place. Returns
+  // false when the server refused, so the inline form can stay
+  // open for another try. Renaming the open board leaves it
+  // open — only the name changes.
+  async function handleRenameBoard(board: BoardMeta, name: string): Promise<boolean> {
+    setBoardsError(null);
+    try {
+      const renamed = await renameBoard(httpSyncUrl(), board.id, name);
+      setBoards((prev) =>
+        (prev ?? []).map((item) => (item.id === board.id ? renamed : item)),
+      );
+      return true;
+    } catch (error) {
+      setBoardsError(error instanceof Error ? error.message : "Could not rename board.");
+      return false;
+    }
+  }
+
   // Deletes a board after a confirm step. Deleting the open
   // board moves this client back to the default board; deleting
   // another board leaves the open one alone.
@@ -668,6 +749,7 @@ function BoardsApp({
       onDismissNotice={() => setNotice(null)}
       onSwitchBoard={switchBoard}
       onCreateBoard={handleCreateBoard}
+      onRenameBoard={handleRenameBoard}
       onDeleteBoard={handleDeleteBoard}
     />
   );
@@ -685,6 +767,7 @@ function Board({
   onDismissNotice,
   onSwitchBoard,
   onCreateBoard,
+  onRenameBoard,
   onDeleteBoard,
 }: {
   user: SessionUser;
@@ -698,17 +781,35 @@ function Board({
   onDismissNotice: () => void;
   onSwitchBoard: (boardId: string) => void;
   onCreateBoard: (name: string) => Promise<boolean>;
+  onRenameBoard: (board: BoardMeta, name: string) => Promise<boolean>;
   onDeleteBoard: (board: BoardMeta) => Promise<void>;
 }) {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [authError, setAuthError] = useState<string | null>(null);
-  // The new-board form in the board switcher: whether it is
+  // The new-board form in the board sidebar: whether it is
   // open, the name typed so far, and whether a create is in
   // flight. This is per-board view state, so it resets when the
   // board switches — the form never survives a switch.
   const [showNewBoardForm, setShowNewBoardForm] = useState(false);
   const [newBoardName, setNewBoardName] = useState("");
   const [creatingBoard, setCreatingBoard] = useState(false);
+  // The rename in the board sidebar: which board's row is being
+  // edited, the name typed so far, and whether a rename is in
+  // flight. One row at a time — opening another closes this one.
+  // Like the new-board form, this is per-board view state, so it
+  // resets when the board switches.
+  const [renamingBoardId, setRenamingBoardId] = useState<string | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renamingBoard, setRenamingBoard] = useState(false);
+  // The board sidebar, left of the tool rail: whether its board
+  // list is showing. Collapsed it is just the toggle, so the
+  // board gets the width back.
+  // Phones start collapsed: at 390px the open sidebar takes half
+  // the screen and leaves the board a sliver, so the toggle is
+  // the way in instead of the default.
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => window.innerWidth >= 640,
+  );
   const [notes, setNotes] = useState<Note[]>([]);
   // The shapes on the board, from the shared "shapes" map —
   // rectangles, ellipses, lines, and pen strokes.
@@ -723,6 +824,35 @@ function Board({
   // map — arrows joining two items, recomputed from their
   // positions every render.
   const [connectors, setConnectors] = useState<Connector[]>([]);
+  // The comment threads on the board, from the shared
+  // "comments" map — each one pinned to a spot on the canvas.
+  const [comments, setComments] = useState<Comment[]>([]);
+  // The dot votes on the board, from the shared "votes" map —
+  // one entry per dot placed, keyed by the vote's own id.
+  const [votes, setVotes] = useState<Vote[]>([]);
+  // The dot-voting session, from the shared "voting" map.
+  // Null when no session has ever started on this board.
+  const [votingSession, setVotingSession] = useState<VotingSession | null>(null);
+  // The dots per person the starter picks before opening a
+  // session. Local only until Start voting writes it to the
+  // shared session.
+  const [dotsPerPersonChoice, setDotsPerPersonChoice] = useState(DEFAULT_DOTS_PER_PERSON);
+  // The comment pin waiting for its text: the user clicked the
+  // canvas with the Comment tool, and the composer in the panel
+  // is open. The pin itself is local only until the comment is
+  // added — nothing syncs until there is text to share.
+  const [commentDraft, setCommentDraft] = useState<{ id: string; x: number; y: number } | null>(
+    null,
+  );
+  // The text typed into the comment composer so far.
+  const [commentText, setCommentText] = useState("");
+  // The comment thread this user clicked, pin or panel row.
+  // It highlights both the pin and the row.
+  const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null);
+  // The comments panel, right of the board: whether its thread
+  // list is showing. Phones start collapsed, like the boards
+  // sidebar — the open panel would take half a narrow screen.
+  const [commentsOpen, setCommentsOpen] = useState(() => window.innerWidth >= 640);
   // The active tool. Select is the default; Escape returns here.
   const [tool, setTool] = useState<Tool>("select");
   // Everyone else on the board, from Awareness. Our own presence
@@ -768,6 +898,10 @@ function Board({
   // The last import/export note for the user — an error when a
   // file could not be imported, a confirmation when one was.
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  // Whether the Share button is showing its "Copied" confirmation.
+  const [shareCopied, setShareCopied] = useState(false);
+  // Whether the template picker bar is showing under the header.
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   // Whether the local UndoManager has anything to undo or redo.
   // Updated whenever the undo stack changes.
   const [canUndo, setCanUndo] = useState(false);
@@ -782,6 +916,9 @@ function Board({
   const textsMapRef = useRef<Y.Map<TextMap> | null>(null);
   const framesMapRef = useRef<Y.Map<FrameMap> | null>(null);
   const connectorsMapRef = useRef<Y.Map<ConnectorMap> | null>(null);
+  const commentsMapRef = useRef<Y.Map<CommentMap> | null>(null);
+  const votesMapRef = useRef<Y.Map<VoteMap> | null>(null);
+  const votingMapRef = useRef<VotingMap | null>(null);
   // The selected frame and connector, mirrored in refs so the
   // keyboard handler — bound once — can read them without going
   // stale. Frames and connectors are not published to Awareness
@@ -789,7 +926,7 @@ function Board({
   // presence ref cannot carry them.
   const selectedFrameRef = useRef<string | null>(null);
   const selectedConnectorRef = useRef<string | null>(null);
-  // The hidden file input for Import JSON — the toolbar button
+  // The hidden file input for Import JSON — the header button
   // opens it, and the change handler reads the picked file.
   const importInputRef = useRef<HTMLInputElement | null>(null);
   // The provider's Awareness instance (null only if the provider
@@ -810,6 +947,16 @@ function Board({
   // When the last cursor position was sent, for the ~30/s throttle.
   const lastCursorSentRef = useRef(0);
   const boardRef = useRef<HTMLDivElement | null>(null);
+  // The minimap box in the bottom-right corner, for reading its
+  // position when a pointer lands on it.
+  const minimapRef = useRef<HTMLDivElement | null>(null);
+  // The minimap drag in progress, if any — a click pans once,
+  // a drag pans continuously while the pointer moves.
+  const minimapDragRef = useRef<{ pointerId: number } | null>(null);
+  // The board's size on screen, for the minimap's viewport
+  // rectangle. Kept in state (not read straight from the ref)
+  // so the minimap re-renders when the window resizes.
+  const [boardSize, setBoardSize] = useState({ w: 0, h: 0 });
   // Zoom and pan are per-user view state: local only, never synced
   // and never persisted — the other tab keeps its own view.
   const MIN_ZOOM = 0.25;
@@ -831,6 +978,21 @@ function Board({
     panY: number;
   } | null>(null);
   const [panning, setPanning] = useState(false);
+  // Tracks the board's size for the minimap. The observer fires
+  // on resize and once at the start, so the viewport rectangle
+  // is right from the first render.
+  useEffect(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    const updateSize = (): void => {
+      const rect = board.getBoundingClientRect();
+      setBoardSize({ w: rect.width, h: rect.height });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(board);
+    return () => observer.disconnect();
+  }, []);
   const dragRef = useRef<{
     id: string;
     pointerId: number;
@@ -970,15 +1132,25 @@ function Board({
     framesMapRef.current = framesMap;
     const connectorsMap = doc.getMap<ConnectorMap>("connectors");
     connectorsMapRef.current = connectorsMap;
+    const commentsMap = doc.getMap<CommentMap>("comments");
+    commentsMapRef.current = commentsMap;
+    const votesMap = doc.getMap<VoteMap>("votes");
+    votesMapRef.current = votesMap;
+    // The session map itself holds the session fields, so it
+    // is read as a plain map of values — not a map of maps.
+    const votingMap = doc.getMap<unknown>("voting");
+    votingMapRef.current = votingMap;
 
     // Per-user undo: the manager only tracks transactions stamped
     // with our own origin, so another user's edits never land on
-    // our undo stack. It watches all five shared roots — notes,
-    // shapes, text boxes, frames, and connectors — so one undo
-    // stack covers all of them. Drags and typing batch into one
-    // step while they keep coming within the capture timeout (500 ms).
+    // our undo stack. It watches all seven shared roots — notes,
+    // shapes, text boxes, frames, connectors, comments, and
+    // votes — so one undo stack covers all of them. The "voting"
+    // map is not watched: starting or ending a session is never
+    // an undo step, while placing a dot and clearing votes are.
+    // Drags and typing batch into one step while they keep coming within the capture timeout (500 ms).
     const undoManager = new Y.UndoManager(
-      [notesMap, shapesMap, textsMap, framesMap, connectorsMap],
+      [notesMap, shapesMap, textsMap, framesMap, connectorsMap, commentsMap, votesMap],
       {
         trackedOrigins: new Set([localOrigin]),
       },
@@ -1053,6 +1225,40 @@ function Board({
     connectorsMap.observeDeep(snapshotConnectors);
     snapshotConnectors();
 
+    // Re-reads every comment thread from the shared document
+    // into React state. observeDeep fires for new threads and
+    // for resolve and delete changes alike.
+    function snapshotComments(): void {
+      const next: Comment[] = [];
+      commentsMap.forEach((commentMap, id) => next.push(readComment(id, commentMap)));
+      setComments(next);
+    }
+
+    commentsMap.observeDeep(snapshotComments);
+    snapshotComments();
+
+    // Re-reads every dot vote from the shared document into
+    // React state. observeDeep fires for new votes and for
+    // deletions when votes are cleared alike.
+    function snapshotVotes(): void {
+      const next: Vote[] = [];
+      votesMap.forEach((voteMap, id) => next.push(readVote(id, voteMap)));
+      setVotes(next);
+    }
+
+    votesMap.observeDeep(snapshotVotes);
+    snapshotVotes();
+
+    // Re-reads the voting session from the shared document
+    // into React state. observe fires when a session starts,
+    // ends, or changes its dots per person.
+    function snapshotVoting(): void {
+      setVotingSession(readVotingSession(votingMap));
+    }
+
+    votingMap.observe(snapshotVoting);
+    snapshotVoting();
+
     // Presence: this client publishes its own cursor and selection
     // through Awareness, and reads everyone else's from the same
     // Awareness instance. Awareness is ephemeral — the server
@@ -1095,6 +1301,9 @@ function Board({
       textsMap.unobserveDeep(snapshotTexts);
       framesMap.unobserveDeep(snapshotFrames);
       connectorsMap.unobserveDeep(snapshotConnectors);
+      commentsMap.unobserveDeep(snapshotComments);
+      votesMap.unobserveDeep(snapshotVotes);
+      votingMap.unobserve(snapshotVoting);
       provider.destroy();
       doc.destroy();
       docRef.current = null;
@@ -1103,6 +1312,9 @@ function Board({
       textsMapRef.current = null;
       framesMapRef.current = null;
       connectorsMapRef.current = null;
+      commentsMapRef.current = null;
+      votesMapRef.current = null;
+      votingMapRef.current = null;
     };
   }, [token, boardId, localOrigin, onAuthFailed]);
 
@@ -1202,6 +1414,22 @@ function Board({
       // Clicking empty canvas cancels a connector in
       // progress — there is nothing here to connect to.
       setConnectorPendingFromId(null);
+    } else if (tool === "comment") {
+      // Clicking empty canvas with the Comment tool drops a
+      // pin and opens the composer in the comments panel.
+      // Clicking again while a draft is open moves the pin
+      // instead of starting a second one — the typed text
+      // stays put.
+      const point = toBoardCoords(event.clientX, event.clientY);
+      setCommentDraft((draft) => ({
+        id: draft?.id ?? crypto.randomUUID(),
+        x: Math.max(0, Math.round(point.x)),
+        y: Math.max(0, Math.round(point.y)),
+      }));
+      setCommentsOpen(true);
+    } else if (tool === "vote") {
+      // Clicking empty canvas with the Vote tool does nothing:
+      // a dot needs an item to sit on.
     } else if (tool === "note") {
       // Clicking empty canvas with the Note tool drops a
       // note centered on the click.
@@ -1252,6 +1480,64 @@ function Board({
   function resetView(): void {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+  }
+
+  // The minimap's geometry from the current board state: the
+  // box it shows, the scale it draws at, and the visible area
+  // in board coordinates. Both the minimap handlers and the
+  // render below go through here, so a click on the minimap
+  // and the picture it shows always agree.
+  function minimapGeometry(): { bounds: Box; scale: number; viewport: Box } {
+    const viewport: Box = {
+      x: -pan.x / zoom,
+      y: -pan.y / zoom,
+      w: boardSize.w / zoom,
+      h: boardSize.h / zoom,
+    };
+    const bounds = minimapBounds([...frames, ...notes, ...shapes], viewport);
+    return { bounds, scale: minimapScale(bounds, MINIMAP_WIDTH, MINIMAP_HEIGHT), viewport };
+  }
+
+  // Pans the canvas so the board point under a minimap pointer
+  // lands at the centre of the view — the standard minimap
+  // behaviour: click a spot, and that spot comes to the middle.
+  // Local view state only; the document is never touched.
+  function panMinimapTo(clientX: number, clientY: number): void {
+    const minimap = minimapRef.current;
+    if (!minimap) return;
+    const rect = minimap.getBoundingClientRect();
+    const { bounds, scale } = minimapGeometry();
+    const point = minimapToBoard(
+      { x: clientX - rect.left, y: clientY - rect.top },
+      bounds,
+      scale,
+      MINIMAP_WIDTH,
+      MINIMAP_HEIGHT,
+    );
+    setPan(panToCentreBoardPoint(point, zoom, boardSize.w, boardSize.h));
+  }
+
+  // A press on the minimap pans to that spot at once, and a
+  // drag keeps panning while the pointer moves. The pointer is
+  // captured on the minimap, so the drag keeps going even if
+  // it slides off the minimap's edge.
+  function startMinimapDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    minimapDragRef.current = { pointerId: event.pointerId };
+    panMinimapTo(event.clientX, event.clientY);
+  }
+
+  function moveMinimapDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    const drag = minimapDragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    panMinimapTo(event.clientX, event.clientY);
+  }
+
+  function endMinimapDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (minimapDragRef.current?.pointerId === event.pointerId) {
+      minimapDragRef.current = null;
+    }
   }
 
   // Dragging empty canvas pans the view (per user — never synced).
@@ -1436,6 +1722,59 @@ function Board({
       Math.max(0, center.x - DEFAULT_NOTE_SIZE.w / 2),
       Math.max(0, center.y - DEFAULT_NOTE_SIZE.h / 2),
     );
+  }
+
+  // Inserts a template's frames and notes at the centre of the
+  // visible board, in one transaction — so one undo removes the
+  // whole template. The template is centred on what the user
+  // can see right now, not dropped at the board origin, where
+  // it might sit off-screen. The picker closes once the
+  // template is in.
+  function insertTemplate(template: BoardTemplate): void {
+    const doc = docRef.current;
+    const notesMap = notesMapRef.current;
+    const framesMap = framesMapRef.current;
+    const board = boardRef.current;
+    if (!doc || !notesMap || !framesMap || !board) return;
+    const rect = board.getBoundingClientRect();
+    const centre = toBoardCoords(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const bounds = templateBounds(template);
+    const originX = Math.max(0, Math.round(centre.x - bounds.w / 2));
+    const originY = Math.max(0, Math.round(centre.y - bounds.h / 2));
+    const placed = placeTemplate(template, originX, originY);
+    doc.transact(() => {
+      for (const spec of placed.frames) {
+        const frame = createFrame(
+          crypto.randomUUID(),
+          spec.x,
+          spec.y,
+          spec.w,
+          spec.h,
+          spec.color,
+          spec.title,
+        );
+        framesMap.set(frame.id, buildFrameMap(frame));
+      }
+      for (const spec of placed.notes) {
+        const id = crypto.randomUUID();
+        notesMap.set(
+          id,
+          buildNoteMap({
+            id,
+            x: spec.x,
+            y: spec.y,
+            w: spec.w,
+            h: spec.h,
+            color: spec.color,
+            text: spec.text,
+          }),
+        );
+      }
+    }, localOrigin);
+    // The insert is its own undo step: the next change starts a
+    // fresh one instead of joining this one.
+    undoManagerRef.current?.stopCapturing();
+    setTemplatesOpen(false);
   }
 
   // Double-clicking empty canvas creates a note centered on the
@@ -2226,6 +2565,131 @@ function Board({
     selectConnector(id);
   }
 
+  // Adds the draft pin as a comment thread, signed with the
+  // signed-in user's name — the same name presence shows. Empty
+  // text adds nothing: the draft stays open for another try.
+  // The tool goes back to Select, so the next click moves
+  // things instead of dropping another pin.
+  function submitComment(): void {
+    const draft = commentDraft;
+    const text = commentText.trim();
+    const doc = docRef.current;
+    const commentsMap = commentsMapRef.current;
+    if (!draft || text === "" || !doc || !commentsMap) return;
+    const comment = createComment(draft.id, draft.x, draft.y, user.name, text);
+    doc.transact(() => {
+      commentsMap.set(comment.id, buildCommentMap(comment));
+    }, localOrigin);
+    setCommentDraft(null);
+    setCommentText("");
+    setSelectedCommentId(comment.id);
+    setTool("select");
+  }
+
+  // Marks a thread resolved or reopens it. Resolved threads
+  // stay in the panel; only their pins leave the canvas.
+  function resolveComment(commentId: string, resolved: boolean): void {
+    const doc = docRef.current;
+    const commentsMap = commentsMapRef.current;
+    if (!doc || !commentsMap) return;
+    const commentMap = commentsMap.get(commentId);
+    if (!commentMap) return;
+    doc.transact(() => {
+      commentMap.set("resolved", resolved);
+    }, localOrigin);
+  }
+
+  // Removes a thread from the shared map, so it disappears in
+  // every tab. One undo brings it back.
+  function deleteComment(commentId: string): void {
+    const doc = docRef.current;
+    const commentsMap = commentsMapRef.current;
+    if (!doc || !commentsMap || !commentsMap.has(commentId)) return;
+    doc.transact(() => {
+      commentsMap.delete(commentId);
+    }, localOrigin);
+    if (selectedCommentId === commentId) {
+      setSelectedCommentId(null);
+    }
+  }
+
+  // Places one of this user's dots on an item. Only while a
+  // session is open, and only while this user still has dots
+  // left in this session — the bar shows how many are left, and
+  // a click past the limit does nothing. Dots from earlier
+  // sessions stay on the items, but they never count toward
+  // this session's allocation. Each dot is its own undo step,
+  // so Ctrl+Z takes back one dot at a time.
+  function placeVote(itemId: string): void {
+    const doc = docRef.current;
+    const votesMap = votesMapRef.current;
+    if (!doc || !votesMap) return;
+    if (!votingSession?.active) return;
+    const sessionVotes = votesInSession(votes, votingSession.session);
+    if (!canPlaceVote(sessionVotes, user.id, votingSession.dotsPerPerson)) return;
+    const id = crypto.randomUUID();
+    const vote = createVote(id, itemId, user.id, user.name, votingSession.session);
+    doc.transact(() => {
+      votesMap.set(vote.id, buildVoteMap(vote));
+    }, localOrigin);
+    undoManagerRef.current?.stopCapturing();
+  }
+
+  // Opens a voting session with the dots per person the starter
+  // picked. A fresh session gives everyone a fresh allocation,
+  // and the dots from earlier sessions stay where they are —
+  // visible on the items, with the total in each badge. Only
+  // the new session's dots count toward the limit, so starting
+  // never clears anything and never asks. The session number
+  // counts up, so every dot knows which session it belongs to.
+  // The Vote tool becomes active, so the next click on an item
+  // places a dot.
+  function startVoting(): void {
+    const doc = docRef.current;
+    const votingMap = votingMapRef.current;
+    if (!doc || !votingMap) return;
+    doc.transact(() => {
+      writeVotingSession(votingMap, {
+        active: true,
+        dotsPerPerson: dotsPerPersonChoice,
+        startedBy: user.id,
+        startedByName: user.name,
+        session: (votingSession?.session ?? 0) + 1,
+      });
+    }, localOrigin);
+    undoManagerRef.current?.stopCapturing();
+    setTool("vote");
+  }
+
+  // Ends the session. The dots stay where they are — frozen
+  // and visible — until someone clears them. The tool goes back
+  // to Select, so the next click moves things instead of voting.
+  function endVoting(): void {
+    const doc = docRef.current;
+    const votingMap = votingMapRef.current;
+    if (!doc || !votingMap || !votingSession) return;
+    doc.transact(() => {
+      writeVotingSession(votingMap, { ...votingSession, active: false });
+    }, localOrigin);
+    if (tool === "vote") setTool("select");
+  }
+
+  // Removes every dot from the shared map, so they disappear in
+  // every tab. One undo brings them all back.
+  function clearVotes(): void {
+    const doc = docRef.current;
+    const votesMap = votesMapRef.current;
+    if (!doc || !votesMap || votes.length === 0) return;
+    doc.transact(() => {
+      // The ids are collected first: deleting while iterating
+      // the map would skip entries.
+      const voteIds: string[] = [];
+      votesMap.forEach((_, voteId) => voteIds.push(voteId));
+      for (const voteId of voteIds) votesMap.delete(voteId);
+    }, localOrigin);
+    undoManagerRef.current?.stopCapturing();
+  }
+
   // The smallest a note can be resized to — smaller than this,
   // the text is unreadable.
   const MIN_NOTE_SIZE = 120;
@@ -2287,6 +2751,24 @@ function Board({
     const manager = undoManagerRef.current;
     if (!manager || !manager.canRedo()) return;
     manager.redo();
+  }
+
+  // Copies a link to this board. The clipboard write needs a
+  // user gesture, so it runs straight from the button click.
+  async function shareBoard(): Promise<void> {
+    const link = buildBoardLink(window.location.href);
+    try {
+      await navigator.clipboard.writeText(link);
+    } catch {
+      setImportMessage(
+        "Could not copy the board link — copy the address from your browser instead.",
+      );
+      return;
+    }
+    setImportMessage(null);
+    setShareCopied(true);
+    // The button reads "Copied" just long enough to confirm it.
+    window.setTimeout(() => setShareCopied(false), 2000);
   }
 
   // Downloads the board as a PNG image, rendered from the synced
@@ -2361,7 +2843,7 @@ function Board({
     );
   }
 
-  // Creates the board from the switcher form and opens it. The
+  // Creates the board from the sidebar form and opens it. The
   // form only closes on success, so a failed create leaves the
   // typed name in place for another try.
   async function submitNewBoard(event: React.FormEvent): Promise<void> {
@@ -2377,6 +2859,29 @@ function Board({
       }
     } finally {
       setCreatingBoard(false);
+    }
+  }
+
+  // Renames the board whose row is being edited. Enter saves,
+  // Escape cancels — the same shape as the new-board form, so a
+  // failed rename leaves the typed name in place for another
+  // try. Saving the unchanged name just closes the form.
+  async function submitRenameBoard(event: React.FormEvent, board: BoardMeta): Promise<void> {
+    event.preventDefault();
+    const name = renameName.trim();
+    if (!name) return;
+    if (name === board.name) {
+      setRenamingBoardId(null);
+      return;
+    }
+    setRenamingBoard(true);
+    try {
+      const renamed = await onRenameBoard(board, name);
+      if (renamed) {
+        setRenamingBoardId(null);
+      }
+    } finally {
+      setRenamingBoard(false);
     }
   }
 
@@ -2399,6 +2904,8 @@ function Board({
       if (event.key === "Escape") {
         setTool("select");
         setConnectorPendingFromId(null);
+        setCommentDraft(null);
+        setCommentText("");
         return;
       }
       if (mod && !event.shiftKey && key === "z") {
@@ -2535,188 +3042,97 @@ function Board({
     }
   }
 
+  // The threads newest first, for the comments panel, and how
+  // many are still open — the panel title shows the open count.
+  const sortedComments = sortCommentsNewestFirst(comments);
+  const openCommentCount = comments.filter((comment) => !comment.resolved).length;
+
+  // How many dots this user still has to place in the open
+  // session. Zero when no session is open. Only this session's
+  // dots count — dots from earlier sessions stay on the items,
+  // but they never eat into this session's allocation.
+  const myDotsLeft =
+    votingSession?.active === true
+      ? remainingDots(
+          votesInSession(votes, votingSession.session),
+          user.id,
+          votingSession.dotsPerPerson,
+        )
+      : 0;
+
+  // What the minimap draws: every frame, note, and shape, in
+  // that order — frames underneath, so the items inside them
+  // stay visible. Comments and votes are not shown: they are
+  // annotations on items, not items on the board.
+  const minimapItems: Array<Box & { id: string; color: NoteColor; kind: string }> = [
+    ...frames.map((frame) => ({ ...frame, kind: "frame" })),
+    ...notes.map((note) => ({ ...note, kind: "note" })),
+    ...shapes.map((shape) => ({ ...shape, kind: "shape" })),
+  ];
+  const minimapGeometryValue = minimapGeometry();
+  const minimapViewportRect = viewportRect(
+    minimapGeometryValue.viewport,
+    minimapGeometryValue.bounds,
+    minimapGeometryValue.scale,
+    MINIMAP_WIDTH,
+    MINIMAP_HEIGHT,
+  );
+
+  // The dot badge for one item: the total dots on it, from
+  // everyone. Nothing when the item has no dots — the badge
+  // only appears once a dot lands. It never takes clicks: it
+  // sits over the item, and a click passes through to the item
+  // underneath.
+  function voteBadge(itemId: string): React.ReactNode {
+    const count = countItemVotes(votes, itemId);
+    if (count === 0) return null;
+    return (
+      <span
+        className="vote-badge"
+        data-item-id={itemId}
+        data-vote-count={count}
+        title={`${count} vote${count === 1 ? "" : "s"}`}
+        aria-label={`${count} vote${count === 1 ? "" : "s"}`}
+      >
+        {count}
+      </span>
+    );
+  }
+
+  // The name of the board on screen, for the header. The list
+  // may still be loading, so the board id stands in until then.
+  const currentBoardName = boards.find((board) => board.id === boardId)?.name ?? boardId;
+
   return (
     <div className="board-page">
       <header className="board-header">
         <h1>SyncBoard</h1>
-        <span className="user-chip">
-          <span className="user-dot" style={{ background: user.color }} />
-          {user.name}
+        <span className="board-name">{currentBoardName}</span>
+        <span className="header-presence" aria-label="People on this board">
+          <span className="presence-count">{presence.length + 1} online</span>
+          <PresenceChip person={user} you />
+          {presence.map((person) => (
+            <PresenceChip key={person.id} person={person} />
+          ))}
         </span>
-        <span className={`status status-${status}`}>
-          {status === "connected"
-            ? "Connected"
-            : status === "connecting"
-              ? "Connecting…"
-              : "Disconnected"}
-        </span>
-        {authError && <span className="auth-error">Sign-in failed: {authError}</span>}
-        <button type="button" className="sign-out" onClick={onSignOut}>
-          Sign out
-        </button>
-      </header>
-      <div className="boards-bar" aria-label="Boards">
-        {boards.map((board) => (
-          <span
-            key={board.id}
-            className={`board-tab${board.id === boardId ? " active" : ""}`}
-          >
-            <button
-              type="button"
-              className="board-tab-button"
-              onClick={() => onSwitchBoard(board.id)}
-              aria-current={board.id === boardId ? "true" : undefined}
-            >
-              {board.name}
-            </button>
-            {canDeleteBoard(board.id) && (
-              <button
-                type="button"
-                className="board-tab-delete"
-                onClick={() => void onDeleteBoard(board)}
-                aria-label={`Delete board ${board.name}`}
-                title={`Delete ${board.name}`}
-              >
-                ×
-              </button>
-            )}
-          </span>
-        ))}
-        {showNewBoardForm ? (
-          <form className="board-new-form" onSubmit={(event) => void submitNewBoard(event)}>
-            <input
-              aria-label="New board name"
-              value={newBoardName}
-              onChange={(event) => setNewBoardName(event.target.value)}
-              placeholder="Board name"
-              autoFocus
-              maxLength={100}
-            />
-            <button type="submit" disabled={creatingBoard || newBoardName.trim() === ""}>
-              Create board
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowNewBoardForm(false);
-                setNewBoardName("");
-              }}
-            >
-              Cancel
-            </button>
-          </form>
-        ) : (
-          <button
-            type="button"
-            className="board-new-button"
-            onClick={() => setShowNewBoardForm(true)}
-          >
-            + New board
-          </button>
-        )}
-      </div>
-      {notice && (
-        <p className="board-notice" role="status">
-          {notice}{" "}
-          <button type="button" onClick={onDismissNotice}>
-            Dismiss
-          </button>
-        </p>
-      )}
-      {boardsError && (
-        <p className="board-error" role="alert">
-          {boardsError}
-        </p>
-      )}
-      <div className="presence-bar" aria-label="People on this board">
-        <span className="presence-count">{presence.length + 1} online</span>
-        <PresenceChip person={user} you />
-        {presence.map((person) => (
-          <PresenceChip key={person.id} person={person} />
-        ))}
-      </div>
-      <div className="toolbar" aria-label="Board tools">
-        <button type="button" className="toolbar-button" onClick={createNoteAtCenter}>
-          + Note
-        </button>
-        <span className="toolbar-divider" aria-hidden="true" />
-        <div className="tool-picker" role="group" aria-label="Drawing tools">
-          {TOOLS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`toolbar-button tool-button${tool === item.id ? " active" : ""}`}
-              onClick={() => setTool(item.id)}
-              aria-pressed={tool === item.id}
-              title={
-                item.id === "select"
-                  ? "Select and move things (Escape)"
-                  : item.id === "note"
-                    ? "Click empty canvas to add a note"
-                    : item.id === "text"
-                      ? "Click empty canvas to add a text box"
-                      : item.id === "connector"
-                        ? "Click one item, then another, to connect them with an arrow"
-                        : `Drag on empty canvas to draw a ${item.label.toLowerCase()}`
-              }
-            >
-              {TOOL_ICONS[item.id]}
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <span className="toolbar-divider" aria-hidden="true" />
-        <div className="color-picker" role="group" aria-label="Note and shape color">
-          {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
-            <button
-              key={color}
-              type="button"
-              className={`color-dot${color === pickedColor ? " active" : ""}`}
-              style={{ background: NOTE_COLORS[color] }}
-              onClick={() => pickColor(color)}
-              aria-label={`${color} note`}
-              aria-pressed={color === pickedColor}
-            />
-          ))}
-        </div>
-        <span className="toolbar-divider" aria-hidden="true" />
-        <div className="font-size-picker" role="group" aria-label="Text size">
-          {TEXT_FONT_SIZES.map((size) => (
-            <button
-              key={size}
-              type="button"
-              className={`toolbar-button font-size-button${pickedFontSize === size ? " active" : ""}`}
-              onClick={() => pickFontSize(size)}
-              aria-pressed={pickedFontSize === size}
-              aria-label={`${size} text`}
-              title={`${size[0].toUpperCase()}${size.slice(1)} text (${FONT_SIZE_PX[size]}px)`}
-            >
-              {size === "small" ? "S" : size === "medium" ? "M" : "L"}
-            </button>
-          ))}
-        </div>
-        <span className="toolbar-divider" aria-hidden="true" />
         <button
           type="button"
           className="toolbar-button"
-          onClick={undo}
-          disabled={!canUndo}
-          title="Undo (Ctrl+Z)"
+          onClick={() => void shareBoard()}
+          title="Copy a link to this board"
         >
-          {ACTION_ICONS.undo}
-          Undo
+          {shareCopied ? "Copied" : "Share"}
         </button>
         <button
           type="button"
           className="toolbar-button"
-          onClick={redo}
-          disabled={!canRedo}
-          title="Redo (Ctrl+Shift+Z)"
+          onClick={() => setTemplatesOpen(!templatesOpen)}
+          aria-expanded={templatesOpen}
+          aria-label="Templates"
+          title="Insert a template of frames and notes"
         >
-          {ACTION_ICONS.redo}
-          Redo
+          Templates
         </button>
-        <span className="toolbar-divider" aria-hidden="true" />
         <div className="export-controls" role="group" aria-label="Export and import">
           <button
             type="button"
@@ -2759,40 +3175,30 @@ function Board({
             }}
           />
         </div>
-        <span className="toolbar-divider" aria-hidden="true" />
-        <div className="zoom-controls" role="group" aria-label="Zoom">
-          <button
-            type="button"
-            className="toolbar-button zoom-button"
-            onClick={() => zoomBy(1 / ZOOM_STEP)}
-            aria-label="Zoom out"
-            title="Zoom out"
-          >
-            −
+        <span className="user-chip">
+          <span className="user-dot" style={{ background: user.color }} />
+          {user.name}
+        </span>
+        <span className={`status status-${status}`}>
+          {status === "connected"
+            ? "Connected"
+            : status === "connecting"
+              ? "Connecting…"
+              : "Disconnected"}
+        </span>
+        {authError && <span className="auth-error">Sign-in failed: {authError}</span>}
+        <button type="button" className="sign-out" onClick={onSignOut}>
+          Sign out
+        </button>
+      </header>
+      {notice && (
+        <p className="board-notice" role="status">
+          {notice}{" "}
+          <button type="button" onClick={onDismissNotice}>
+            Dismiss
           </button>
-          <span className="zoom-label" aria-live="polite">
-            {Math.round(zoom * 100)}%
-          </span>
-          <button
-            type="button"
-            className="toolbar-button zoom-button"
-            onClick={() => zoomBy(ZOOM_STEP)}
-            aria-label="Zoom in"
-            title="Zoom in"
-          >
-            +
-          </button>
-          <button
-            type="button"
-            className="toolbar-button"
-            onClick={resetView}
-            disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
-            title="Reset view to 100%"
-          >
-            Reset
-          </button>
-        </div>
-      </div>
+        </p>
+      )}
       {importMessage && (
         <p className="board-notice" role="status">
           {importMessage}{" "}
@@ -2809,612 +3215,1191 @@ function Board({
           </button>
         </p>
       )}
-      <div
-        className={`board${panning ? " panning" : ""}${tool !== "select" ? " drawing" : ""}`}
-        ref={boardRef}
-        onPointerMove={(event) => {
-          trackCursor(event);
-          movePan(event);
-          moveDraw(event);
-          moveFrameDraw(event);
-          moveTextDrag(event);
-        }}
-        onPointerLeave={clearCursor}
-        onPointerDown={(event) => {
-          // A press on empty board (not on a note, shape, or frame).
-          if (event.target === event.currentTarget || event.target === canvasRef.current) {
-            handleEmptyCanvasPress(event);
-          }
-        }}
-        onPointerUp={(event) => {
-          endPan(event);
-          endDraw(event);
-          endFrameDraw(event);
-          endTextDrag(event);
-        }}
-        onPointerCancel={(event) => {
-          endPan(event);
-          endDraw(event);
-          endFrameDraw(event);
-          endTextDrag(event);
-        }}
-        onDoubleClick={createNoteAtPoint}
-      >
-        <div
-          className="board-canvas"
-          ref={canvasRef}
-          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
-        >
-          {frames.map((frame) => {
-            const isConnectorSource = connectorPendingFromId === frame.id;
-            const isSelected = selectedFrameId === frame.id;
-            const stroke = SHAPE_STROKE_COLORS[frame.color];
-            return (
-              <div
-                key={frame.id}
-                className="frame"
-                data-frame-id={frame.id}
-                onPointerDown={(event) => {
-                  if (event.button !== 0) return;
-                  if (tool === "connector") {
-                    event.preventDefault();
-                    pickConnectorEndpoint(frame.id);
-                    return;
-                  }
-                  if (tool !== "select") {
-                    // A creation tool pressed on the frame: the
-                    // frame is empty board for this purpose, so
-                    // the press creates or draws inside it.
-                    handleEmptyCanvasPress(event);
-                    return;
-                  }
-                  selectFrame(frame.id);
-                  startFrameDrag(event, frame);
-                }}
-                onPointerMove={(event) => {
-                  moveFrameDrag(event);
-                  // A shape or frame draw started inside this
-                  // frame captures the pointer here, so its moves
-                  // arrive on the frame, not the board.
-                  moveDraw(event);
-                  moveFrameDraw(event);
-                }}
-                onPointerUp={(event) => {
-                  endFrameDrag(event);
-                  endDraw(event);
-                  endFrameDraw(event);
-                }}
-                onPointerCancel={(event) => {
-                  endFrameDrag(event);
-                  endDraw(event);
-                  endFrameDraw(event);
-                }}
-                style={{
-                  left: frame.x,
-                  top: frame.y,
-                  width: frame.w,
-                  height: frame.h,
-                  border: `2px solid ${stroke}`,
-                  // A selected frame — or the pending source of a
-                  // connector — gets an accent outline.
-                  ...(isSelected || isConnectorSource
-                    ? { boxShadow: "0 0 0 2px var(--color-accent)" }
-                    : undefined),
-                }}
+      {/* Dot voting: the session controls. Starting a session
+          opens voting for everyone on the board; ending it
+          freezes the dots in place; clearing removes them all
+          (one undo brings them back). */}
+      <div className="voting-bar" role="group" aria-label="Dot voting">
+        {votingSession?.active === true ? (
+          <>
+            <span className="voting-status">
+              Voting open, started by {votingSession.startedByName}. You have {myDotsLeft} of{" "}
+              {votingSession.dotsPerPerson} dots left.
+            </span>
+            <button type="button" onClick={endVoting}>
+              End voting
+            </button>
+            <button type="button" onClick={clearVotes} disabled={votes.length === 0}>
+              Clear votes
+            </button>
+          </>
+        ) : votingSession ? (
+          <>
+            <span className="voting-status">
+              Voting ended. The dots are frozen. Started by {votingSession.startedByName}.
+            </span>
+            <label className="voting-dots-label">
+              Dots per person
+              <select
+                aria-label="Dots per person"
+                value={dotsPerPersonChoice}
+                onChange={(event) => setDotsPerPersonChoice(Number(event.target.value))}
               >
-                {isSelected && (
-                  <>
-                    <button
-                      type="button"
-                      className="note-delete"
-                      onClick={() => deleteFrame(frame.id)}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      aria-label="Delete frame"
-                      title="Delete frame (Delete key)"
-                    >
-                      ×
-                    </button>
-                    <div
-                      className="note-resize"
-                      onPointerDown={(event) => startFrameResize(event, frame)}
-                      onPointerMove={moveFrameResize}
-                      onPointerUp={endFrameResize}
-                      aria-label="Resize frame"
-                    />
-                  </>
-                )}
-              </div>
-            );
-          })}
-          <svg className="connector-svg" aria-hidden="true">
-            <defs>
-              {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
-                <marker
-                  key={color}
-                  id={`connector-arrow-${color}`}
-                  markerWidth="8"
-                  markerHeight="8"
-                  refX="6"
-                  refY="3"
-                  orient="auto"
-                >
-                  <path d="M0,0 L0,6 L7,3 z" fill={SHAPE_STROKE_COLORS[color]} />
-                </marker>
-              ))}
-            </defs>
-            {connectors.map((connector) => {
-              const from = boxesById.get(connector.fromId);
-              const to = boxesById.get(connector.toId);
-              // An endpoint that is gone (a stale import) draws
-              // nothing — a connector never points at nowhere.
-              if (!from || !to) return null;
-              const ends = connectorEndpoints(from, to);
-              const stroke = SHAPE_STROKE_COLORS[connector.color];
-              const isSelected = selectedConnectorId === connector.id;
-              return (
-                <g key={connector.id}>
-                  {/* A wide transparent line, so the thin visible
-                      line is easy to click. */}
-                  <line
-                    className="connector-hit"
-                    x1={ends.x1}
-                    y1={ends.y1}
-                    x2={ends.x2}
-                    y2={ends.y2}
-                    onPointerDown={(event) => {
-                      if (event.button !== 0 || tool === "connector") return;
-                      selectConnector(connector.id);
-                    }}
-                  />
-                  <line
-                    className="connector-line"
-                    x1={ends.x1}
-                    y1={ends.y1}
-                    x2={ends.x2}
-                    y2={ends.y2}
-                    stroke={stroke}
-                    strokeWidth={isSelected ? 4 : 2.5}
-                    markerEnd={`url(#connector-arrow-${connector.color})`}
-                    onPointerDown={(event) => {
-                      if (event.button !== 0 || tool === "connector") return;
-                      selectConnector(connector.id);
-                    }}
-                  />
-                </g>
-              );
-            })}
-          </svg>
-          {selectedConnectorMid && selectedConnector && (
+                {DOTS_PER_PERSON_OPTIONS.map((count) => (
+                  <option key={count} value={count}>
+                    {count}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="button" onClick={startVoting}>
+              Start new voting
+            </button>
+            <button type="button" onClick={clearVotes} disabled={votes.length === 0}>
+              Clear votes
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="voting-status">Dot voting</span>
+            <label className="voting-dots-label">
+              Dots per person
+              <select
+                aria-label="Dots per person"
+                value={dotsPerPersonChoice}
+                onChange={(event) => setDotsPerPersonChoice(Number(event.target.value))}
+              >
+                {DOTS_PER_PERSON_OPTIONS.map((count) => (
+                  <option key={count} value={count}>
+                    {count}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="button" onClick={startVoting}>
+              Start voting
+            </button>
+          </>
+        )}
+      </div>
+      {/* Templates: one click inserts a template's frames and
+          notes at the centre of the visible board. The picker
+          is a bar under the header, like the voting bar — it
+          wraps on a phone instead of squeezing the board. */}
+      {templatesOpen && (
+        <div className="templates-bar" role="group" aria-label="Templates">
+          <span className="templates-title">Templates</span>
+          {TEMPLATES.map((template) => (
+            <button
+              key={template.id}
+              type="button"
+              className="template-button"
+              onClick={() => insertTemplate(template)}
+              title={template.description}
+            >
+              <span className="template-name">{template.name}</span>
+              <span className="template-description">{template.description}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            className="template-close"
+            onClick={() => setTemplatesOpen(false)}
+            aria-label="Close templates"
+            title="Close templates"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      <div className="board-main">
+        <aside className={`board-sidebar${sidebarOpen ? "" : " collapsed"}`} aria-label="Boards">
+          <div className="board-sidebar-head">
+            <span className="board-sidebar-title">Boards</span>
             <button
               type="button"
-              className="connector-delete"
-              style={{ left: selectedConnectorMid.x, top: selectedConnectorMid.y }}
-              onClick={() => deleteConnector(selectedConnector.id)}
-              onPointerDown={(event) => event.stopPropagation()}
-              aria-label="Delete connector"
-              title="Delete connector (Delete key)"
+              className="board-sidebar-toggle"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-expanded={sidebarOpen}
+              aria-label={sidebarOpen ? "Collapse boards sidebar" : "Expand boards sidebar"}
+              title={sidebarOpen ? "Collapse boards" : "Expand boards"}
             >
-              ×
+              {sidebarOpen ? "‹" : "›"}
             </button>
+          </div>
+          {sidebarOpen && (
+            <>
+              <ul className="board-list">
+                {boards.map((board) => (
+                  <li
+                    key={board.id}
+                    className={`board-tab${board.id === boardId ? " active" : ""}`}
+                  >
+                    {renamingBoardId === board.id ? (
+                      <form
+                        className="board-rename-form"
+                        onSubmit={(event) => void submitRenameBoard(event, board)}
+                      >
+                        <input
+                          aria-label={`Rename board ${board.name}`}
+                          value={renameName}
+                          onChange={(event) => setRenameName(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") setRenamingBoardId(null);
+                          }}
+                          placeholder="Board name"
+                          title="Enter to save, Escape to cancel"
+                          autoFocus
+                          maxLength={100}
+                        />
+                        <button
+                          type="submit"
+                          disabled={renamingBoard || renameName.trim() === ""}
+                        >
+                          Save
+                        </button>
+                        <button type="button" onClick={() => setRenamingBoardId(null)}>
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="board-tab-button"
+                          onClick={() => onSwitchBoard(board.id)}
+                          aria-current={board.id === boardId ? "true" : undefined}
+                          title={board.name}
+                        >
+                          {board.name}
+                        </button>
+                        <button
+                          type="button"
+                          className="board-tab-rename"
+                          onClick={() => {
+                            setRenamingBoardId(board.id);
+                            setRenameName(board.name);
+                          }}
+                          aria-label={`Rename board ${board.name}`}
+                          title={`Rename ${board.name}`}
+                        >
+                          Rename
+                        </button>
+                        {canDeleteBoard(board.id) && (
+                          <button
+                            type="button"
+                            className="board-tab-delete"
+                            onClick={() => void onDeleteBoard(board)}
+                            aria-label={`Delete board ${board.name}`}
+                            title={`Delete ${board.name}`}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {showNewBoardForm ? (
+                <form className="board-new-form" onSubmit={(event) => void submitNewBoard(event)}>
+                  <input
+                    aria-label="New board name"
+                    value={newBoardName}
+                    onChange={(event) => setNewBoardName(event.target.value)}
+                    placeholder="Board name"
+                    autoFocus
+                    maxLength={100}
+                  />
+                  <button type="submit" disabled={creatingBoard || newBoardName.trim() === ""}>
+                    Create board
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNewBoardForm(false);
+                      setNewBoardName("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  className="board-new-button"
+                  onClick={() => setShowNewBoardForm(true)}
+                >
+                  + New board
+                </button>
+              )}
+              {boardsError && (
+                <p className="board-error board-sidebar-error" role="alert">
+                  {boardsError}
+                </p>
+              )}
+            </>
           )}
-          {shapes.map((shape) => {
-            const selectors = selectorsByShape.get(shape.id) ?? [];
-            const stroke = SHAPE_STROKE_COLORS[shape.color];
-            // The outline for a selected shape: a selector's color,
+        </aside>
+        <nav className="tool-rail" aria-label="Board tools">
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={createNoteAtCenter}
+            aria-label="Add note"
+          >
+            + <span className="tool-label">Note</span>
+          </button>
+          <span className="toolbar-divider" aria-hidden="true" />
+          <div className="tool-picker" role="group" aria-label="Drawing tools">
+            {TOOLS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`toolbar-button tool-button${tool === item.id ? " active" : ""}`}
+                onClick={() => setTool(item.id)}
+                disabled={item.id === "vote" && votingSession?.active !== true}
+                aria-pressed={tool === item.id}
+                aria-label={item.label}
+                title={
+                  item.id === "select"
+                    ? "Select and move things (Escape)"
+                    : item.id === "note"
+                      ? "Click empty canvas to add a note"
+                      : item.id === "text"
+                        ? "Click empty canvas to add a text box"
+                        : item.id === "connector"
+                          ? "Click one item, then another, to connect them with an arrow"
+                          : item.id === "comment"
+                            ? "Click empty canvas to pin a comment"
+                            : item.id === "vote"
+                              ? votingSession?.active === true
+                                ? "Click an item to place a dot on it"
+                                : "Start a voting session to place dots"
+                              : `Drag on empty canvas to draw a ${item.label.toLowerCase()}`
+                }
+              >
+                {TOOL_ICONS[item.id]}
+                <span className="tool-label">{item.label}</span>
+              </button>
+            ))}
+          </div>
+          <span className="toolbar-divider" aria-hidden="true" />
+          <div className="color-picker" role="group" aria-label="Note and shape color">
+            {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
+              <button
+                key={color}
+                type="button"
+                className={`color-dot${color === pickedColor ? " active" : ""}`}
+                style={{ background: NOTE_COLORS[color] }}
+                onClick={() => pickColor(color)}
+                aria-label={`${color} note`}
+                aria-pressed={color === pickedColor}
+              />
+            ))}
+          </div>
+          <span className="toolbar-divider" aria-hidden="true" />
+          <div className="font-size-picker" role="group" aria-label="Text size">
+            {TEXT_FONT_SIZES.map((size) => (
+              <button
+                key={size}
+                type="button"
+                className={`toolbar-button font-size-button${pickedFontSize === size ? " active" : ""}`}
+                onClick={() => pickFontSize(size)}
+                aria-pressed={pickedFontSize === size}
+                aria-label={`${size} text`}
+                title={`${size[0].toUpperCase()}${size.slice(1)} text (${FONT_SIZE_PX[size]}px)`}
+              >
+                {size === "small" ? "S" : size === "medium" ? "M" : "L"}
+              </button>
+            ))}
+          </div>
+          <span className="toolbar-divider" aria-hidden="true" />
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={undo}
+            disabled={!canUndo}
+            aria-label="Undo"
+            title="Undo (Ctrl+Z)"
+          >
+            {ACTION_ICONS.undo}
+            <span className="tool-label">Undo</span>
+          </button>
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={redo}
+            disabled={!canRedo}
+            aria-label="Redo"
+            title="Redo (Ctrl+Shift+Z)"
+          >
+            {ACTION_ICONS.redo}
+            <span className="tool-label">Redo</span>
+          </button>
+        </nav>
+        <div
+          className={`board${panning ? " panning" : ""}${tool !== "select" ? " drawing" : ""}`}
+          ref={boardRef}
+          onPointerMove={(event) => {
+            trackCursor(event);
+            movePan(event);
+            moveDraw(event);
+            moveFrameDraw(event);
+            moveTextDrag(event);
+          }}
+          onPointerLeave={clearCursor}
+          onPointerDown={(event) => {
+            // A press on empty board (not on a note, shape, or frame).
+            if (event.target === event.currentTarget || event.target === canvasRef.current) {
+              handleEmptyCanvasPress(event);
+            }
+          }}
+          onPointerUp={(event) => {
+            endPan(event);
+            endDraw(event);
+            endFrameDraw(event);
+            endTextDrag(event);
+          }}
+          onPointerCancel={(event) => {
+            endPan(event);
+            endDraw(event);
+            endFrameDraw(event);
+            endTextDrag(event);
+          }}
+          onDoubleClick={createNoteAtPoint}
+        >
+          <div
+            className="board-canvas"
+            ref={canvasRef}
+            style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+          >
+            {frames.map((frame) => {
+              const isConnectorSource = connectorPendingFromId === frame.id;
+              const isSelected = selectedFrameId === frame.id;
+              const stroke = SHAPE_STROKE_COLORS[frame.color];
+              return (
+                <div
+                  key={frame.id}
+                  className="frame"
+                  data-frame-id={frame.id}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    if (tool === "connector") {
+                      event.preventDefault();
+                      pickConnectorEndpoint(frame.id);
+                      return;
+                    }
+                    if (tool === "vote") {
+                      event.preventDefault();
+                      placeVote(frame.id);
+                      return;
+                    }
+                    if (tool !== "select") {
+                      // A creation tool pressed on the frame: the
+                      // frame is empty board for this purpose, so
+                      // the press creates or draws inside it.
+                      handleEmptyCanvasPress(event);
+                      return;
+                    }
+                    selectFrame(frame.id);
+                    startFrameDrag(event, frame);
+                  }}
+                  onPointerMove={(event) => {
+                    moveFrameDrag(event);
+                    // A shape or frame draw started inside this
+                    // frame captures the pointer here, so its moves
+                    // arrive on the frame, not the board.
+                    moveDraw(event);
+                    moveFrameDraw(event);
+                  }}
+                  onPointerUp={(event) => {
+                    endFrameDrag(event);
+                    endDraw(event);
+                    endFrameDraw(event);
+                  }}
+                  onPointerCancel={(event) => {
+                    endFrameDrag(event);
+                    endDraw(event);
+                    endFrameDraw(event);
+                  }}
+                  style={{
+                    left: frame.x,
+                    top: frame.y,
+                    width: frame.w,
+                    height: frame.h,
+                    border: `2px solid ${stroke}`,
+                    // A selected frame — or the pending source of a
+                    // connector — gets an accent outline.
+                    ...(isSelected || isConnectorSource
+                      ? { boxShadow: "0 0 0 2px var(--color-accent)" }
+                      : undefined),
+                  }}
+                >
+                  {voteBadge(frame.id)}
+                  {isSelected && (
+                    <>
+                      <button
+                        type="button"
+                        className="note-delete"
+                        onClick={() => deleteFrame(frame.id)}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        aria-label="Delete frame"
+                        title="Delete frame (Delete key)"
+                      >
+                        ×
+                      </button>
+                      <div
+                        className="note-resize"
+                        onPointerDown={(event) => startFrameResize(event, frame)}
+                        onPointerMove={moveFrameResize}
+                        onPointerUp={endFrameResize}
+                        aria-label="Resize frame"
+                      />
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            <svg className="connector-svg" aria-hidden="true">
+              <defs>
+                {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
+                  <marker
+                    key={color}
+                    id={`connector-arrow-${color}`}
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="6"
+                    refY="3"
+                    orient="auto"
+                  >
+                    <path d="M0,0 L0,6 L7,3 z" fill={SHAPE_STROKE_COLORS[color]} />
+                  </marker>
+                ))}
+              </defs>
+              {connectors.map((connector) => {
+                const from = boxesById.get(connector.fromId);
+                const to = boxesById.get(connector.toId);
+                // An endpoint that is gone (a stale import) draws
+                // nothing — a connector never points at nowhere.
+                if (!from || !to) return null;
+                const ends = connectorEndpoints(from, to);
+                const stroke = SHAPE_STROKE_COLORS[connector.color];
+                const isSelected = selectedConnectorId === connector.id;
+                return (
+                  <g key={connector.id}>
+                    {/* A wide transparent line, so the thin visible
+                        line is easy to click. */}
+                    <line
+                      className="connector-hit"
+                      x1={ends.x1}
+                      y1={ends.y1}
+                      x2={ends.x2}
+                      y2={ends.y2}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0 || tool === "connector") return;
+                        selectConnector(connector.id);
+                      }}
+                    />
+                    <line
+                      className="connector-line"
+                      x1={ends.x1}
+                      y1={ends.y1}
+                      x2={ends.x2}
+                      y2={ends.y2}
+                      stroke={stroke}
+                      strokeWidth={isSelected ? 4 : 2.5}
+                      markerEnd={`url(#connector-arrow-${connector.color})`}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0 || tool === "connector") return;
+                        selectConnector(connector.id);
+                      }}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+            {selectedConnectorMid && selectedConnector && (
+              <button
+                type="button"
+                className="connector-delete"
+                style={{ left: selectedConnectorMid.x, top: selectedConnectorMid.y }}
+                onClick={() => deleteConnector(selectedConnector.id)}
+                onPointerDown={(event) => event.stopPropagation()}
+                aria-label="Delete connector"
+                title="Delete connector (Delete key)"
+              >
+                ×
+              </button>
+            )}
+            {shapes.map((shape) => {
+              const selectors = selectorsByShape.get(shape.id) ?? [];
+              const stroke = SHAPE_STROKE_COLORS[shape.color];
+              // The outline for a selected shape: a selector's color,
+              // or the accent when it is the pending source of a
+              // connector being drawn.
+              const isConnectorSource = connectorPendingFromId === shape.id;
+              const outline = isConnectorSource
+                ? "0 0 0 2px var(--color-accent)"
+                : selectors.length > 0
+                  ? `0 0 0 2px ${selectors[0].color}`
+                  : null;
+              // A zero-size box would collapse the SVG, so the
+              // rendered box is at least 1px in each direction.
+              const boxW = Math.max(1, shape.w);
+              const boxH = Math.max(1, shape.h);
+              return (
+                <div
+                  key={shape.id}
+                  className="shape"
+                  data-shape-id={shape.id}
+                  data-shape-kind={shape.kind}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    if (tool === "connector") {
+                      event.preventDefault();
+                      pickConnectorEndpoint(shape.id);
+                      return;
+                    }
+                    if (tool === "vote") {
+                      event.preventDefault();
+                      placeVote(shape.id);
+                      return;
+                    }
+                    if (tool !== "select") return;
+                    selectShape(shape.id);
+                    startShapeDrag(event, shape);
+                  }}
+                  onPointerMove={moveShapeDrag}
+                  onPointerUp={endShapeDrag}
+                  style={{
+                    left: shape.x,
+                    top: shape.y,
+                    width: boxW,
+                    height: boxH,
+                    // A selected shape gets an outline in the first
+                    // selector's color, like a selected note.
+                    ...(outline ? { boxShadow: outline } : undefined),
+                    ...(shape.kind === "rect" || shape.kind === "ellipse"
+                      ? {
+                          background: NOTE_COLORS[shape.color],
+                          border: `2px solid ${stroke}`,
+                          borderRadius: shape.kind === "ellipse" ? "50%" : "var(--radius-input)",
+                        }
+                      : undefined),
+                  }}
+                >
+                  {selectors.length > 0 && (
+                    <span
+                      className="shape-selector"
+                      style={{ background: selectors[0].color }}
+                    >
+                      {selectors.map((person) => person.name).join(", ")}
+                    </span>
+                  )}
+                  {voteBadge(shape.id)}
+                  {shape.kind === "line" && (
+                    <svg
+                      className="shape-svg"
+                      width="100%"
+                      height="100%"
+                      viewBox={`0 0 ${boxW} ${boxH}`}
+                      preserveAspectRatio="none"
+                      aria-hidden="true"
+                    >
+                      <defs>
+                        <marker
+                          id={`arrow-${shape.id}`}
+                          markerWidth="8"
+                          markerHeight="8"
+                          refX="6"
+                          refY="3"
+                          orient="auto"
+                        >
+                          <path d="M0,0 L0,6 L7,3 z" fill={stroke} />
+                        </marker>
+                      </defs>
+                      <line
+                        x1="2"
+                        y1="2"
+                        x2={boxW - 2}
+                        y2={boxH - 2}
+                        stroke={stroke}
+                        strokeWidth="3"
+                        markerEnd={`url(#arrow-${shape.id})`}
+                      />
+                    </svg>
+                  )}
+                  {shape.kind === "pen" && (
+                    <svg
+                      className="shape-svg"
+                      width="100%"
+                      height="100%"
+                      viewBox={`0 0 ${boxW} ${boxH}`}
+                      preserveAspectRatio="none"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d={penPathFromPoints(shape.points, shape.x, shape.y)}
+                        stroke={stroke}
+                        strokeWidth="3"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                  {selectedShapeId === shape.id && (
+                    <>
+                      <button
+                        type="button"
+                        className="note-delete"
+                        onClick={() => deleteShape(shape.id)}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        aria-label="Delete shape"
+                        title="Delete shape (Delete key)"
+                      >
+                        ×
+                      </button>
+                      {shape.kind !== "pen" && (
+                        <div
+                          className="note-resize"
+                          onPointerDown={(event) => startShapeResize(event, shape)}
+                          onPointerMove={moveShapeResize}
+                          onPointerUp={endShapeResize}
+                          aria-label="Resize shape"
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            {notes.map((note) => {
+            const selectors = selectorsByNote.get(note.id) ?? [];
+            // The outline for a selected note: a selector's color,
             // or the accent when it is the pending source of a
             // connector being drawn.
-            const isConnectorSource = connectorPendingFromId === shape.id;
+            const isConnectorSource = connectorPendingFromId === note.id;
             const outline = isConnectorSource
               ? "0 0 0 2px var(--color-accent)"
               : selectors.length > 0
                 ? `0 0 0 2px ${selectors[0].color}`
                 : null;
-            // A zero-size box would collapse the SVG, so the
-            // rendered box is at least 1px in each direction.
-            const boxW = Math.max(1, shape.w);
-            const boxH = Math.max(1, shape.h);
             return (
               <div
-                key={shape.id}
-                className="shape"
-                data-shape-id={shape.id}
-                data-shape-kind={shape.kind}
+                key={note.id}
+                className="note"
                 onPointerDown={(event) => {
                   if (event.button !== 0) return;
                   if (tool === "connector") {
+                    // Picking an endpoint, not editing: keep the
+                    // press from focusing the textarea.
                     event.preventDefault();
-                    pickConnectorEndpoint(shape.id);
+                    pickConnectorEndpoint(note.id);
                     return;
                   }
-                  if (tool !== "select") return;
-                  selectShape(shape.id);
-                  startShapeDrag(event, shape);
+                  if (tool === "vote") {
+                    event.preventDefault();
+                    placeVote(note.id);
+                    return;
+                  }
+                  selectNote(note.id);
                 }}
-                onPointerMove={moveShapeDrag}
-                onPointerUp={endShapeDrag}
                 style={{
-                  left: shape.x,
-                  top: shape.y,
-                  width: boxW,
-                  height: boxH,
-                  // A selected shape gets an outline in the first
-                  // selector's color, like a selected note.
-                  ...(outline ? { boxShadow: outline } : undefined),
-                  ...(shape.kind === "rect" || shape.kind === "ellipse"
+                  left: note.x,
+                  top: note.y,
+                  width: note.w,
+                  height: note.h,
+                  background: NOTE_COLORS[note.color],
+                  // A selected note gets an outline in the first
+                  // selector's color, on top of the usual shadow.
+                  ...(outline
                     ? {
-                        background: NOTE_COLORS[shape.color],
-                        border: `2px solid ${stroke}`,
-                        borderRadius: shape.kind === "ellipse" ? "50%" : "var(--radius-input)",
+                        boxShadow: `${outline}, var(--shadow-card)`,
                       }
                     : undefined),
                 }}
               >
                 {selectors.length > 0 && (
                   <span
-                    className="shape-selector"
+                    className="note-selector"
                     style={{ background: selectors[0].color }}
                   >
                     {selectors.map((person) => person.name).join(", ")}
                   </span>
                 )}
-                {shape.kind === "line" && (
-                  <svg
-                    className="shape-svg"
-                    width="100%"
-                    height="100%"
-                    viewBox={`0 0 ${boxW} ${boxH}`}
-                    preserveAspectRatio="none"
-                    aria-hidden="true"
-                  >
-                    <defs>
-                      <marker
-                        id={`arrow-${shape.id}`}
-                        markerWidth="8"
-                        markerHeight="8"
-                        refX="6"
-                        refY="3"
-                        orient="auto"
-                      >
-                        <path d="M0,0 L0,6 L7,3 z" fill={stroke} />
-                      </marker>
-                    </defs>
-                    <line
-                      x1="2"
-                      y1="2"
-                      x2={boxW - 2}
-                      y2={boxH - 2}
-                      stroke={stroke}
-                      strokeWidth="3"
-                      markerEnd={`url(#arrow-${shape.id})`}
-                    />
-                  </svg>
-                )}
-                {shape.kind === "pen" && (
-                  <svg
-                    className="shape-svg"
-                    width="100%"
-                    height="100%"
-                    viewBox={`0 0 ${boxW} ${boxH}`}
-                    preserveAspectRatio="none"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d={penPathFromPoints(shape.points, shape.x, shape.y)}
-                      stroke={stroke}
-                      strokeWidth="3"
-                      fill="none"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                )}
-                {selectedShapeId === shape.id && (
+                {voteBadge(note.id)}
+                <div
+                  className="note-handle"
+                  onPointerDown={(event) => startDrag(event, note)}
+                  onPointerMove={moveDrag}
+                  onPointerUp={endDrag}
+                />
+                <textarea
+                  className="note-text"
+                  value={note.text}
+                  onChange={(event) => changeNoteText(note.id, event.target.value)}
+                  onBlur={() => undoManagerRef.current?.stopCapturing()}
+                  placeholder="New note"
+                  aria-label="Note text"
+                />
+                {selectedNoteId === note.id && (
                   <>
                     <button
                       type="button"
                       className="note-delete"
-                      onClick={() => deleteShape(shape.id)}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      aria-label="Delete shape"
-                      title="Delete shape (Delete key)"
+                      onClick={() => deleteNote(note.id)}
+                      aria-label="Delete note"
+                      title="Delete note (Delete key)"
                     >
                       ×
                     </button>
-                    {shape.kind !== "pen" && (
-                      <div
-                        className="note-resize"
-                        onPointerDown={(event) => startShapeResize(event, shape)}
-                        onPointerMove={moveShapeResize}
-                        onPointerUp={endShapeResize}
-                        aria-label="Resize shape"
-                      />
-                    )}
+                    <div
+                      className="note-resize"
+                      onPointerDown={(event) => startResize(event, note)}
+                      onPointerMove={moveResize}
+                      onPointerUp={endResize}
+                      aria-label="Resize note"
+                    />
                   </>
                 )}
               </div>
             );
           })}
-          {notes.map((note) => {
-          const selectors = selectorsByNote.get(note.id) ?? [];
-          // The outline for a selected note: a selector's color,
-          // or the accent when it is the pending source of a
-          // connector being drawn.
-          const isConnectorSource = connectorPendingFromId === note.id;
-          const outline = isConnectorSource
-            ? "0 0 0 2px var(--color-accent)"
-            : selectors.length > 0
-              ? `0 0 0 2px ${selectors[0].color}`
-              : null;
-          return (
-            <div
-              key={note.id}
-              className="note"
-              onPointerDown={(event) => {
-                if (event.button !== 0) return;
-                if (tool === "connector") {
-                  // Picking an endpoint, not editing: keep the
-                  // press from focusing the textarea.
-                  event.preventDefault();
-                  pickConnectorEndpoint(note.id);
-                  return;
-                }
-                selectNote(note.id);
-              }}
-              style={{
-                left: note.x,
-                top: note.y,
-                width: note.w,
-                height: note.h,
-                background: NOTE_COLORS[note.color],
-                // A selected note gets an outline in the first
-                // selector's color, on top of the usual shadow.
-                ...(outline
-                  ? {
-                      boxShadow: `${outline}, var(--shadow-card)`,
-                    }
-                  : undefined),
-              }}
-            >
-              {selectors.length > 0 && (
-                <span
-                  className="note-selector"
-                  style={{ background: selectors[0].color }}
-                >
-                  {selectors.map((person) => person.name).join(", ")}
-                </span>
-              )}
+          {texts.map((textBox) => {
+            const selectors = selectorsByText.get(textBox.id) ?? [];
+            // The outline for a selected text box: a selector's
+            // color, or the accent when it is the pending source
+            // of a connector being drawn.
+            const isConnectorSource = connectorPendingFromId === textBox.id;
+            const outline = isConnectorSource
+              ? "0 0 0 2px var(--color-accent)"
+              : selectors.length > 0
+                ? `0 0 0 2px ${selectors[0].color}`
+                : null;
+            return (
               <div
-                className="note-handle"
-                onPointerDown={(event) => startDrag(event, note)}
-                onPointerMove={moveDrag}
-                onPointerUp={endDrag}
-              />
-              <textarea
-                className="note-text"
-                value={note.text}
-                onChange={(event) => changeNoteText(note.id, event.target.value)}
-                onBlur={() => undoManagerRef.current?.stopCapturing()}
-                placeholder="New note"
-                aria-label="Note text"
-              />
-              {selectedNoteId === note.id && (
-                <>
-                  <button
-                    type="button"
-                    className="note-delete"
-                    onClick={() => deleteNote(note.id)}
-                    aria-label="Delete note"
-                    title="Delete note (Delete key)"
-                  >
-                    ×
-                  </button>
-                  <div
-                    className="note-resize"
-                    onPointerDown={(event) => startResize(event, note)}
-                    onPointerMove={moveResize}
-                    onPointerUp={endResize}
-                    aria-label="Resize note"
-                  />
-                </>
-              )}
-            </div>
-          );
-        })}
-        {texts.map((textBox) => {
-          const selectors = selectorsByText.get(textBox.id) ?? [];
-          // The outline for a selected text box: a selector's
-          // color, or the accent when it is the pending source
-          // of a connector being drawn.
-          const isConnectorSource = connectorPendingFromId === textBox.id;
-          const outline = isConnectorSource
-            ? "0 0 0 2px var(--color-accent)"
-            : selectors.length > 0
-              ? `0 0 0 2px ${selectors[0].color}`
-              : null;
-          return (
-            <div
-              key={textBox.id}
-              className="text-box"
-              data-text-id={textBox.id}
-              onPointerDown={(event) => {
-                if (event.button !== 0) return;
-                if (tool === "connector") {
-                  // Picking an endpoint, not editing: keep the
-                  // press from focusing the textarea.
-                  event.preventDefault();
-                  pickConnectorEndpoint(textBox.id);
-                  return;
-                }
-                selectTextBox(textBox.id);
-              }}
-              style={{
-                left: textBox.x,
-                top: textBox.y,
-                width: textBox.w,
-                height: textBox.h,
-                color: TEXT_COLORS[textBox.color],
-                fontSize: FONT_SIZE_PX[textBox.fontSize],
-                // A selected text box gets an outline in the
-                // first selector's color, like a selected note.
-                ...(outline ? { boxShadow: outline } : undefined),
-              }}
-            >
-              {selectors.length > 0 && (
-                <span
-                  className="text-selector"
-                  style={{ background: selectors[0].color }}
-                >
-                  {selectors.map((person) => person.name).join(", ")}
-                </span>
-              )}
-              <div
-                className="text-handle"
-                onPointerDown={(event) => startTextDrag(event, textBox)}
-                onPointerMove={moveTextDrag}
-                onPointerUp={endTextDrag}
-              />
-              <textarea
-                className="text-box-text"
-                value={textBox.text}
-                onChange={(event) => changeTextBoxText(textBox.id, event.target.value)}
-                onBlur={() => undoManagerRef.current?.stopCapturing()}
-                placeholder="Type something"
-                aria-label="Text box text"
-              />
-              {selectedTextId === textBox.id && (
-                <>
-                  <button
-                    type="button"
-                    className="note-delete"
-                    onClick={() => deleteTextBox(textBox.id)}
-                    aria-label="Delete text box"
-                    title="Delete text box (Delete key)"
-                  >
-                    ×
-                  </button>
-                  <div
-                    className="note-resize"
-                    onPointerDown={(event) => startTextResize(event, textBox)}
-                    onPointerMove={moveTextResize}
-                    onPointerUp={endTextResize}
-                    aria-label="Resize text box"
-                  />
-                </>
-              )}
-            </div>
-          );
-        })}
-        {/* Frame titles live in their own layer above the items, so
-            a note placed over a frame's top-left corner never hides
-            its name. Each title sits at its frame's top-left, inset
-            by FRAME_TITLE_INSET, and never runs past the frame's far
-            edge. The title is still an input — click it to rename. */}
-        {frames.map((frame) => {
-          // The title on screen: the draft while the user is
-          // typing, the shared title otherwise.
-          const titleShown =
-            frameTitleDraft?.id === frame.id ? frameTitleDraft.value : frame.title;
-          return (
-            <input
-              key={frame.id}
-              className="frame-title"
-              value={titleShown}
-              style={{
-                left: frame.x + FRAME_TITLE_INSET,
-                top: frame.y + FRAME_TITLE_INSET,
-                maxWidth: Math.max(60, frame.w - 2 * FRAME_TITLE_INSET),
-                background: NOTE_COLORS[frame.color],
-              }}
-              onChange={(event) =>
-                setFrameTitleDraft({ id: frame.id, value: event.target.value })
-              }
-              onBlur={() => {
-                if (frameTitleDraft?.id === frame.id) {
-                  renameFrame(frame.id, frameTitleDraft.value);
-                  setFrameTitleDraft(null);
-                }
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.currentTarget.blur();
-                } else if (event.key === "Escape") {
-                  // Cancel the edit, not the title: the draft
-                  // is dropped, so the blur below commits
-                  // nothing.
-                  setFrameTitleDraft(null);
-                  event.currentTarget.blur();
-                }
-              }}
-              onFocus={() => selectFrame(frame.id)}
-              onPointerDown={(event) => event.stopPropagation()}
-              aria-label="Frame title"
-              maxLength={60}
-              size={Math.max(4, titleShown.length + 1)}
-            />
-          );
-        })}
-        </div>
-        {/* The empty state sits on the viewport, not the canvas
-            layer, so it stays centred no matter where the board
-            is panned or how far it is zoomed. */}
-        {notes.length === 0 && shapes.length === 0 && texts.length === 0 && frames.length === 0 && (
-          <div className="board-empty">
-            {status === "connected" ? (
-              <>
-                <p className="board-empty-title">This board is empty.</p>
-                <p className="board-empty-line">
-                  Add a note, draw a shape, or write some text to start.
-                </p>
-              </>
-            ) : status === "disconnected" ? (
-              <>
-                <p className="board-empty-title">Can&rsquo;t reach the board.</p>
-                <p className="board-empty-line">
-                  Check your connection. The board will load when it reconnects.
-                </p>
-              </>
-            ) : (
-              <p className="board-empty-line">Loading notes…</p>
-            )}
-          </div>
-        )}
-        {presence.map((person) =>
-          person.cursor ? (
-            <div
-              key={person.id}
-              className="remote-cursor"
-              // Screen space, not board space: the cursor keeps a
-              // constant size and lands on the same note in this
-              // tab no matter what zoom or pan this tab is using.
-              style={{
-                left: pan.x + zoom * person.cursor.x,
-                top: pan.y + zoom * person.cursor.y,
-              }}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M3 2 L3 19 L7.5 14.5 L10.5 21 L13 20 L10 13.5 L16 13.5 Z"
-                  fill={person.color}
-                  stroke="#fff"
-                  strokeWidth="1"
-                />
-              </svg>
-              <span
-                className="remote-cursor-name"
-                style={{ background: person.color }}
+                key={textBox.id}
+                className="text-box"
+                data-text-id={textBox.id}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) return;
+                  if (tool === "connector") {
+                    // Picking an endpoint, not editing: keep the
+                    // press from focusing the textarea.
+                    event.preventDefault();
+                    pickConnectorEndpoint(textBox.id);
+                    return;
+                  }
+                  if (tool === "vote") {
+                    event.preventDefault();
+                    placeVote(textBox.id);
+                    return;
+                  }
+                  selectTextBox(textBox.id);
+                }}
+                style={{
+                  left: textBox.x,
+                  top: textBox.y,
+                  width: textBox.w,
+                  height: textBox.h,
+                  color: TEXT_COLORS[textBox.color],
+                  fontSize: FONT_SIZE_PX[textBox.fontSize],
+                  // A selected text box gets an outline in the
+                  // first selector's color, like a selected note.
+                  ...(outline ? { boxShadow: outline } : undefined),
+                }}
               >
-                {person.name}
-              </span>
+                {selectors.length > 0 && (
+                  <span
+                    className="text-selector"
+                    style={{ background: selectors[0].color }}
+                  >
+                    {selectors.map((person) => person.name).join(", ")}
+                  </span>
+                )}
+                {voteBadge(textBox.id)}
+                <div
+                  className="text-handle"
+                  onPointerDown={(event) => startTextDrag(event, textBox)}
+                  onPointerMove={moveTextDrag}
+                  onPointerUp={endTextDrag}
+                />
+                <textarea
+                  className="text-box-text"
+                  value={textBox.text}
+                  onChange={(event) => changeTextBoxText(textBox.id, event.target.value)}
+                  onBlur={() => undoManagerRef.current?.stopCapturing()}
+                  placeholder="Type something"
+                  aria-label="Text box text"
+                />
+                {selectedTextId === textBox.id && (
+                  <>
+                    <button
+                      type="button"
+                      className="note-delete"
+                      onClick={() => deleteTextBox(textBox.id)}
+                      aria-label="Delete text box"
+                      title="Delete text box (Delete key)"
+                    >
+                      ×
+                    </button>
+                    <div
+                      className="note-resize"
+                      onPointerDown={(event) => startTextResize(event, textBox)}
+                      onPointerMove={moveTextResize}
+                      onPointerUp={endTextResize}
+                      aria-label="Resize text box"
+                    />
+                  </>
+                )}
+              </div>
+            );
+          })}
+          {/* Frame titles live in their own layer above the items, so
+              a note placed over a frame's top-left corner never hides
+              its name. Each title sits at its frame's top-left, inset
+              by FRAME_TITLE_INSET, and never runs past the frame's far
+              edge. The title is still an input — click it to rename. */}
+          {frames.map((frame) => {
+            // The title on screen: the draft while the user is
+            // typing, the shared title otherwise.
+            const titleShown =
+              frameTitleDraft?.id === frame.id ? frameTitleDraft.value : frame.title;
+            return (
+              <input
+                key={frame.id}
+                className="frame-title"
+                value={titleShown}
+                style={{
+                  left: frame.x + FRAME_TITLE_INSET,
+                  top: frame.y + FRAME_TITLE_INSET,
+                  maxWidth: Math.max(60, frame.w - 2 * FRAME_TITLE_INSET),
+                  background: NOTE_COLORS[frame.color],
+                }}
+                onChange={(event) =>
+                  setFrameTitleDraft({ id: frame.id, value: event.target.value })
+                }
+                onBlur={() => {
+                  if (frameTitleDraft?.id === frame.id) {
+                    renameFrame(frame.id, frameTitleDraft.value);
+                    setFrameTitleDraft(null);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                  } else if (event.key === "Escape") {
+                    // Cancel the edit, not the title: the draft
+                    // is dropped, so the blur below commits
+                    // nothing.
+                    setFrameTitleDraft(null);
+                    event.currentTarget.blur();
+                  }
+                }}
+                onFocus={() => selectFrame(frame.id)}
+                onPointerDown={(event) => event.stopPropagation()}
+                aria-label="Frame title"
+                maxLength={60}
+                size={Math.max(4, titleShown.length + 1)}
+              />
+            );
+          })}
+          {/* Comment pins live in the canvas layer, so zoom and
+              pan move them with everything else. Resolved
+              threads show no pin — they live in the panel only.
+              The draft pin is the one waiting for its text. */}
+          {comments
+            .filter((comment) => !comment.resolved)
+            .map((comment) => (
+              <button
+                key={comment.id}
+                type="button"
+                className={`comment-pin${selectedCommentId === comment.id ? " selected" : ""}`}
+                style={{ left: comment.x, top: comment.y }}
+                onClick={() => {
+                  setSelectedCommentId(comment.id);
+                  setCommentsOpen(true);
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                aria-label={`Comment by ${comment.author}: ${comment.text}`}
+                title={`${comment.author}: ${comment.text}`}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 3.5 h10 v7 H8.5 L5.5 13.5 v-3 H3 Z" />
+                </svg>
+              </button>
+            ))}
+          {commentDraft && (
+            <span
+              className="comment-pin draft"
+              style={{ left: commentDraft.x, top: commentDraft.y }}
+              aria-hidden="true"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 3.5 h10 v7 H8.5 L5.5 13.5 v-3 H3 Z" />
+              </svg>
+            </span>
+          )}
+          </div>
+          {/* The empty state sits on the viewport, not the canvas
+              layer, so it stays centred no matter where the board
+              is panned or how far it is zoomed. */}
+          {notes.length === 0 && shapes.length === 0 && texts.length === 0 && frames.length === 0 && (
+            <div className="board-empty">
+              {status === "connected" ? (
+                <>
+                  <p className="board-empty-title">This board is empty.</p>
+                  <p className="board-empty-line">
+                    Add a note, draw a shape, or write some text to start.
+                  </p>
+                </>
+              ) : status === "disconnected" ? (
+                <>
+                  <p className="board-empty-title">Can&rsquo;t reach the board.</p>
+                  <p className="board-empty-line">
+                    Check your connection. The board will load when it reconnects.
+                  </p>
+                </>
+              ) : (
+                <p className="board-empty-line">Loading notes…</p>
+              )}
             </div>
-          ) : null,
-        )}
-      </div>
+          )}
+          {presence.map((person) =>
+            person.cursor ? (
+              <div
+                key={person.id}
+                className="remote-cursor"
+                // Screen space, not board space: the cursor keeps a
+                // constant size and lands on the same note in this
+                // tab no matter what zoom or pan this tab is using.
+                style={{
+                  left: pan.x + zoom * person.cursor.x,
+                  top: pan.y + zoom * person.cursor.y,
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M3 2 L3 19 L7.5 14.5 L10.5 21 L13 20 L10 13.5 L16 13.5 Z"
+                    fill={person.color}
+                    stroke="#fff"
+                    strokeWidth="1"
+                  />
+                </svg>
+                <span
+                  className="remote-cursor-name"
+                  style={{ background: person.color }}
+                >
+                  {person.name}
+                </span>
+              </div>
+            ) : null,
+          )}
+          {/* The minimap and zoom sit on the board itself,
+              bottom-right. The minimap is read-only: it draws
+              the board's frames, notes, and shapes as small
+              rectangles, with the viewport on top. Click or
+              drag on it to pan the canvas. */}
+          <div className="board-corner">
+            <div
+              className="minimap"
+              ref={minimapRef}
+              aria-label="Minimap — click or drag to pan the board"
+              title="Minimap — click or drag to pan"
+              onPointerDown={startMinimapDrag}
+              onPointerMove={moveMinimapDrag}
+              onPointerUp={endMinimapDrag}
+              onPointerCancel={endMinimapDrag}
+            >
+              {minimapItems.map((item) => {
+                const rect = itemRect(
+                  item,
+                  minimapGeometryValue.bounds,
+                  minimapGeometryValue.scale,
+                  MINIMAP_WIDTH,
+                  MINIMAP_HEIGHT,
+                );
+                return (
+                  <span
+                    key={item.id}
+                    className={`minimap-item minimap-item-${item.kind}`}
+                    style={{
+                      left: rect.x,
+                      top: rect.y,
+                      width: rect.w,
+                      height: rect.h,
+                      ...(item.kind === "frame"
+                        ? { border: `1px solid ${SHAPE_STROKE_COLORS[item.color]}` }
+                        : item.kind === "note"
+                          ? { background: NOTE_COLORS[item.color] }
+                          : { background: SHAPE_STROKE_COLORS[item.color] }),
+                    }}
+                  />
+                );
+              })}
+              <span
+                className="minimap-viewport"
+                style={{
+                  left: minimapViewportRect.x,
+                  top: minimapViewportRect.y,
+                  width: minimapViewportRect.w,
+                  height: minimapViewportRect.h,
+                }}
+              />
+            </div>
+            <div className="zoom-controls" role="group" aria-label="Zoom">
+            <button
+              type="button"
+              className="toolbar-button zoom-button"
+              onClick={() => zoomBy(1 / ZOOM_STEP)}
+              aria-label="Zoom out"
+              title="Zoom out"
+            >
+              −
+            </button>
+            <span className="zoom-label" aria-live="polite">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              type="button"
+              className="toolbar-button zoom-button"
+              onClick={() => zoomBy(ZOOM_STEP)}
+              aria-label="Zoom in"
+              title="Zoom in"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              className="toolbar-button"
+              onClick={resetView}
+              disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
+              title="Reset view to 100%"
+            >
+              Reset
+            </button>
+            </div>
+          </div>
+        </div>
+        <aside
+          className={`comments-panel${commentsOpen ? "" : " collapsed"}`}
+          aria-label="Comments"
+        >
+          <div className="comments-panel-head">
+            <span className="comments-panel-title">
+              Comments{openCommentCount > 0 ? ` (${openCommentCount})` : ""}
+            </span>
+            <button
+              type="button"
+              className="board-sidebar-toggle"
+              onClick={() => setCommentsOpen(!commentsOpen)}
+              aria-expanded={commentsOpen}
+              aria-label={commentsOpen ? "Collapse comments panel" : "Expand comments panel"}
+              title={commentsOpen ? "Collapse comments" : "Expand comments"}
+            >
+              {commentsOpen ? "›" : "‹"}
+            </button>
+          </div>
+          {commentsOpen && (
+            <>
+              {commentDraft && (
+                <form
+                  className="comment-composer"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submitComment();
+                  }}
+                >
+                  <label className="comment-composer-label" htmlFor="comment-text">
+                    New comment
+                  </label>
+                  <textarea
+                    id="comment-text"
+                    value={commentText}
+                    onChange={(event) => setCommentText(event.target.value)}
+                    placeholder="Write a comment…"
+                    aria-label="Comment text"
+                    autoFocus
+                    rows={3}
+                    maxLength={500}
+                  />
+                  <div className="comment-composer-actions">
+                    <button type="submit" disabled={commentText.trim() === ""}>
+                      Add comment
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommentDraft(null);
+                        setCommentText("");
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+              {sortedComments.length === 0 ? (
+                <p className="comments-empty">
+                  No comments yet. Pick the Comment tool and click the board to pin one.
+                </p>
+              ) : (
+                <ul className="comment-list">
+                  {sortedComments.map((comment) => (
+                    <li
+                      key={comment.id}
+                      data-comment-id={comment.id}
+                      className={
+                        `comment-thread${comment.resolved ? " resolved" : ""}` +
+                        `${selectedCommentId === comment.id ? " selected" : ""}`
+                      }
+                      onClick={() => setSelectedCommentId(comment.id)}
+                    >
+                      <div className="comment-thread-head">
+                        <span className="comment-author">{comment.author}</span>
+                        <span className="comment-time">
+                          {formatCommentTime(comment.createdAt)}
+                        </span>
+                      </div>
+                      <p className="comment-text">{comment.text}</p>
+                      <div className="comment-actions">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            resolveComment(comment.id, !comment.resolved);
+                          }}
+                        >
+                          {comment.resolved ? "Reopen" : "Resolve"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteComment(comment.id);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </aside>
+        </div>
     </div>
   );
 }
 
-// One person in the presence bar: an avatar circle with their
-// initial, their name, and a green dot while they are online.
+// One person in the header presence group: an avatar circle
+// with their initial, their name, and a green dot while they
+// are online. The name is hidden in the header — only the
+// avatar shows there.
 function PresenceChip({
   person,
   you = false,

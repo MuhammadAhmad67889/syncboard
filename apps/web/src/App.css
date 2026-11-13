@@ -51,7 +51,7 @@
   opacity: 0.55;
 }
 
-/* The toolbar icons sit in the button's own colour. */
+/* The rail and header icons sit in the button's own colour. */
 .toolbar-button svg {
   flex: none;
 }
@@ -224,10 +224,14 @@
   height: 100dvh;
 }
 
-/* The header is the ink band: the wordmark, who is signed in,
-   the connection state, and sign out. */
+/* The header is the ink band: the wordmark, the board name,
+   who is online, Share and Export, who is signed in, the
+   connection state, and sign out. It wraps on narrow screens,
+   so the right-hand group flows under the wordmark instead of
+   squeezing it. */
 .board-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-sm);
   padding: var(--space-xs) var(--space-md);
@@ -239,11 +243,35 @@
   font-size: var(--text-lg);
 }
 
+/* The open board's name, next to the wordmark. */
+.board-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Who is on this board, as avatar circles. The group takes the
+   free space, so Share, Export, and sign out sit at the right. */
+.header-presence {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+/* In the dark band only the avatars show — names would crowd
+   the header — and the count reads in paper, not muted grey. */
+.board-header .presence-name {
+  display: none;
+}
+
+.header-presence .presence-count {
+  color: var(--color-paper);
+}
+
 .user-chip {
   display: flex;
   align-items: center;
   gap: var(--space-2xs);
-  margin-left: auto;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -312,15 +340,122 @@
   transform: translateY(1px);
 }
 
-/* --- Board switcher --- */
-.boards-bar {
+/* --- Board sidebar --- */
+/* The sidebar lists every board, left of the tool rail. It
+   replaces the horizontal board tabs: the same plastic-key
+   tabs, stacked, with the open board as the green key. It
+   scrolls on its own when the boards do not fit, so no board
+   is ever cut off a short screen. Collapsed it is just the
+   toggle, so the board gets the width back. */
+.board-sidebar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-md);
-  border-bottom: 1px solid var(--color-rule);
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: 200px;
+  padding: var(--space-sm);
+  border-right: 1px solid var(--color-rule);
   background: var(--color-paper-2);
+  overflow-y: auto;
+}
+
+.board-sidebar.collapsed {
+  width: auto;
+  padding: var(--space-xs);
+}
+
+/* Collapsed, the "Boards" label hides too — it is nowrap, so
+   left showing it would set the strip's width and the board
+   would get nothing back. */
+.board-sidebar.collapsed .board-sidebar-title {
+  display: none;
+}
+
+.board-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.board-sidebar-title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.board-sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-input);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--dur-short) var(--ease-out), transform var(--dur-micro) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .board-sidebar-toggle:hover {
+    background: var(--color-paper-3);
+  }
+}
+
+.board-sidebar-toggle:active {
+  transform: translateY(1px);
+}
+
+/* The board list is a plain list — the tabs carry the look. */
+.board-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* In the sidebar the tabs stretch the panel's width, and the
+   name takes the free space so long names ellipsize instead
+   of pushing the delete key off the edge. */
+.board-sidebar .board-tab {
+  width: 100%;
+}
+
+.board-sidebar .board-tab-button {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.board-sidebar .board-new-button {
+  width: 100%;
+}
+
+/* The create form wraps in the narrow panel, so the input
+   takes the row and the buttons sit under it. */
+.board-sidebar .board-new-form {
+  flex-wrap: wrap;
+}
+
+.board-sidebar .board-new-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The load error reads as plain text in the panel, not as a
+   banner — the sidebar is already a bordered panel. */
+.board-sidebar .board-error {
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 /* Board tabs are plastic keys; the open one is the green key. */
@@ -370,6 +505,91 @@
 
 .board-tab.active .board-tab-delete {
   color: var(--color-accent-ink);
+}
+
+.board-tab-rename {
+  min-height: 36px;
+  padding: 0 var(--space-xs);
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.board-tab.active .board-tab-rename {
+  color: var(--color-accent-ink);
+}
+
+.board-rename-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-xs);
+}
+
+/* The rename input edits the name in place, so it looks like
+   the name itself — the frame title's inline-edit pattern, not
+   a form field: no border, no fill, just the text, with a
+   focus outline. */
+.board-rename-form input {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 var(--space-xs);
+  border: 0;
+  border-radius: var(--radius-pill);
+  outline: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-weight: 600;
+}
+
+.board-rename-form input:focus-visible {
+  outline: 2px solid var(--color-focus);
+}
+
+/* The rename form's buttons differ by role, so neither shares
+   the paper-key recipe: Save is an outline button (the accent
+   border marks the one action that commits), Cancel is a bare
+   text button. A disabled Save changes in four channels at
+   once — fill, ink, cursor, opacity — like every other
+   disabled button. */
+.board-rename-form button[type="submit"] {
+  min-height: 36px;
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-input);
+  background: transparent;
+  color: var(--color-ink);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-short) var(--ease-out), transform var(--dur-micro) var(--ease-out);
+}
+
+.board-rename-form button[type="submit"]:disabled {
+  border-color: var(--color-rule);
+  background: var(--color-paper-3);
+  color: var(--color-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.board-rename-form button[type="button"] {
+  min-height: 36px;
+  padding: 0 var(--space-xs);
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 .board-new-button {
@@ -446,6 +666,94 @@
   }
 }
 
+/* --- Dot voting --- */
+/* The session bar under the header: the status on the left,
+   the controls on the right. It wraps on a phone, so the
+   buttons drop below the status instead of squeezing it. */
+.voting-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  border-bottom: 1px solid var(--color-rule);
+  background: var(--color-paper-2);
+  font-size: var(--text-sm);
+}
+
+.voting-status {
+  font-weight: 600;
+  color: var(--color-ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.voting-dots-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.voting-dots-label select {
+  padding: var(--space-3xs) var(--space-2xs);
+  border: 1px solid var(--color-muted);
+  border-radius: var(--radius-input);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font: inherit;
+  font-weight: 600;
+}
+
+.voting-bar button {
+  padding: var(--space-3xs) var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-pill);
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.voting-bar button:disabled {
+  background: var(--color-paper-3);
+  color: var(--color-muted);
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .voting-bar button:not(:disabled):hover {
+    background: var(--color-accent-soft);
+  }
+}
+
+/* The dot count on an item: a filled accent circle at its
+   top-right corner, half outside the edge like a badge. It
+   never takes clicks — a click passes through to the item
+   underneath, so voting on a badged item still works. */
+.vote-badge {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 var(--space-2xs);
+  border: 2px solid var(--color-paper);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  box-shadow: var(--shadow-card);
+}
+
 .board-error {
   margin: 0;
   padding: var(--space-xs) var(--space-md);
@@ -456,17 +764,73 @@
   font-weight: 600;
 }
 
-/* --- Presence bar --- */
-.presence-bar {
+/* --- Templates --- */
+/* The picker bar under the header: the title, one button per
+   template, and a close button. It wraps on a phone, so the
+   buttons drop below the title instead of squeezing it. */
+.templates-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-md);
+  gap: var(--space-xs) var(--space-sm);
   padding: var(--space-xs) var(--space-md);
   border-bottom: 1px solid var(--color-rule);
-  background: var(--color-paper);
+  background: var(--color-paper-2);
+  font-size: var(--text-sm);
 }
 
+.templates-title {
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.template-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: var(--space-3xs) var(--space-sm);
+  border: 1px solid var(--color-rule);
+  /* A template pick is a small card, not a button — so it takes
+     the card radius, not the pill the plain buttons use. */
+  border-radius: var(--radius-card);
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.template-name {
+  font-weight: 600;
+}
+
+.template-description {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+
+.template-close {
+  padding: var(--space-3xs) var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .template-button:hover,
+  .template-close:hover {
+    background: var(--color-accent-soft);
+  }
+}
+
+/* --- Presence avatars --- */
+/* The presence pieces live in the header now (see
+   .header-presence above); these are the shared avatar, dot,
+   and count styles. */
 .presence-count {
   font-size: var(--text-sm);
   font-weight: 600;
@@ -511,17 +875,41 @@
   white-space: nowrap;
 }
 
-/* --- Toolbar --- */
-/* The tool surface. It wraps into rows when the tools do not
-   fit, so no tool is ever cut off a narrow screen. */
-.toolbar {
+/* --- Tool rail --- */
+/* The rail holds the board tools down the left edge, next to
+   the board. Later tools plug into the same list. It scrolls
+   on its own when the tools do not fit, so no tool is ever cut
+   off a short screen. The board sits beside it and takes the
+   rest of the page. */
+.board-main {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex: 1;
+  min-height: 0;
+}
+
+.tool-rail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
   gap: var(--space-sm);
-  padding: var(--space-xs) var(--space-md);
-  border-bottom: 1px solid var(--color-rule);
+  padding: var(--space-sm);
+  border-right: 1px solid var(--color-rule);
   background: var(--color-paper-2);
+  overflow-y: auto;
+}
+
+/* Rail buttons stretch the rail's width, icon on the left,
+   label beside it. */
+.tool-rail .toolbar-button {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+/* In the rail the dividers run across, between the groups. */
+.tool-rail .toolbar-divider {
+  width: auto;
+  height: 1px;
 }
 
 .toolbar-divider {
@@ -556,12 +944,75 @@
   outline-offset: 4px;
 }
 
-/* --- Zoom controls --- */
+/* --- Zoom controls and minimap --- */
 .zoom-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2xs);
+}
+
+/* The corner stack floats on the board, bottom-right: the
+   minimap above the zoom controls, right-aligned. */
+.board .board-corner {
+  position: absolute;
+  right: var(--space-md);
+  bottom: var(--space-md);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-xs);
+}
+
+/* Zoom is a paper key on the board, with a defined edge rather
+   than a shadow. It sits in the corner stack, not on the board
+   directly, so it stays under the minimap. */
+.board .zoom-controls {
+  padding: var(--space-2xs);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-input);
+  background: var(--color-paper);
+}
+
+/* The minimap: a small paper overview of the board. Its items
+   are plain rectangles, and the viewport rectangle on top shows
+   what is on screen. Clicking or dragging it pans the canvas,
+   so it reads as grabbable. */
+.minimap {
+  position: relative;
+  width: 180px;
+  height: 120px;
+  overflow: hidden;
+  border: 1px solid var(--color-rule);
+  /* The card radius, not the input radius: the minimap is an
+     overview container, not a key, and the shape should say so. */
+  border-radius: var(--radius-card);
+  background: var(--color-paper);
+  cursor: grab;
+  touch-action: none;
+}
+
+.minimap:active {
+  cursor: grabbing;
+}
+
+.minimap-item {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.minimap-item-frame {
+  background: transparent;
+}
+
+.minimap-viewport {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--color-accent);
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--color-accent) 12%, transparent);
+  pointer-events: none;
 }
 
 .zoom-button {
@@ -673,13 +1124,32 @@
 }
 
 /* --- Tool picker --- */
-/* Each tool group wraps on its own, so a narrow screen never
-   cuts a tool off at the edge: the group flows into rows. */
+/* In the rail the tool group runs down, not across, and the
+   font-size group does the same. Each group wraps on its own,
+   so a narrow screen never cuts a tool off at the edge. */
 .tool-picker {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2xs);
   align-items: center;
+}
+
+.tool-rail .tool-picker {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.tool-rail .font-size-picker {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* The color dots sit three to a row in the rail, so the row
+   never sets the rail's width — the tool buttons do. */
+.tool-rail .color-picker {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  justify-content: start;
 }
 
 .tool-button.active {
@@ -809,6 +1279,218 @@
   .connector-delete:hover {
     background: var(--color-paper);
   }
+}
+
+/* --- Comments --- */
+/* The comments panel lists the threads, right of the board.
+   It scrolls on its own when the threads do not fit. Collapsed
+   it is just the toggle, like the boards sidebar. */
+.comments-panel {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: 260px;
+  padding: var(--space-sm);
+  border-left: 1px solid var(--color-rule);
+  background: var(--color-paper-2);
+  overflow-y: auto;
+}
+
+.comments-panel.collapsed {
+  width: auto;
+  padding: var(--space-xs);
+}
+
+/* Collapsed, the "Comments" label hides too — it is nowrap, so
+   left showing it would set the strip's width. */
+.comments-panel.collapsed .comments-panel-title {
+  display: none;
+}
+
+.comments-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.comments-panel-title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.comments-empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+/* The composer is a paper card at the top of the panel while
+   a pin waits for its text. */
+.comment-composer {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper);
+}
+
+.comment-composer-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.comment-composer textarea {
+  min-height: 72px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-muted);
+  border-radius: var(--radius-input);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  resize: vertical;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+.comment-composer textarea:focus-visible {
+  border-color: var(--color-ink-2);
+  outline-color: var(--color-focus);
+}
+
+.comment-composer-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+/* The small keys in the composer and under each thread: pills,
+   not the toolbar's input-radius keys, so they read as inline
+   actions rather than toolbar buttons. */
+.comment-composer-actions button,
+.comment-actions button {
+  min-height: 32px;
+  padding: var(--space-2xs) var(--space-xs);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-pill);
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur-short) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .comment-composer-actions button:hover,
+  .comment-actions button:hover {
+    background: var(--color-paper-3);
+  }
+}
+
+.comment-composer-actions button:disabled {
+  color: var(--color-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* The thread list is a plain list — the threads carry the look. */
+.comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One thread: author and time on top, the text, then Resolve
+   and Delete. A resolved thread reads quieter, and the selected
+   one gets the accent border to match its pin. */
+.comment-thread {
+  display: grid;
+  gap: var(--space-2xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper);
+  cursor: pointer;
+}
+
+.comment-thread.selected {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+.comment-thread.resolved {
+  opacity: 0.65;
+}
+
+.comment-thread-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.comment-author {
+  font-weight: 600;
+}
+
+.comment-time {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.comment-text {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.comment-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+/* A pin on the canvas: a round green key with a speech bubble,
+   sitting above the spot it marks. The draft pin is a dashed
+   paper key instead — it is not a thread yet, and it never
+   blocks a click on the board. */
+.comment-pin {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 2px solid var(--color-paper);
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  cursor: pointer;
+  transform: translate(-50%, -100%);
+}
+
+.comment-pin.selected {
+  box-shadow: 0 0 0 2px var(--color-focus);
+}
+
+.comment-pin.draft {
+  border-style: dashed;
+  background: var(--color-paper-3);
+  color: var(--color-ink-2);
+  pointer-events: none;
 }
 
 /* --- Sticky notes --- */
@@ -969,22 +1651,6 @@
   align-items: center;
 }
 
-/* --- Narrow screens --- */
-/* Under 60rem the toolbar wraps into rows, so the dividers
-   between its groups would dangle at a row edge; they go away
-   and the wrap itself separates the groups. The header wraps
-   too, so the user chip and sign out flow under the wordmark
-   instead of squeezing it. */
-@media (max-width: 60rem) {
-  .toolbar-divider {
-    display: none;
-  }
-
-  .board-header {
-    flex-wrap: wrap;
-  }
-}
-
 /* Under 40rem the type steps down and the chrome tightens. */
 @media (max-width: 40rem) {
   .picker {
@@ -1004,17 +1670,54 @@
     font-size: var(--text-md);
   }
 
-  .boards-bar,
-  .presence-bar,
-  .toolbar {
-    padding: var(--space-xs) var(--space-sm);
+  .board-sidebar {
+    width: 160px;
+    padding: var(--space-xs);
   }
 
-  .toolbar {
+  .tool-rail {
     gap: var(--space-xs);
+    padding: var(--space-xs);
   }
 
-  .presence-bar {
-    gap: var(--space-sm);
+  /* Rail tools go icon-only, so the rail stays narrow. The
+     color dots drop to two to a row for the same reason. */
+  .tool-rail .tool-label {
+    display: none;
+  }
+
+  .tool-rail .color-picker {
+    grid-template-columns: repeat(2, auto);
+  }
+
+  .tool-rail .toolbar-button {
+    justify-content: center;
+    padding: var(--space-xs);
+  }
+
+  /* On a phone the open comments panel floats over the board
+     instead of squeezing it — the collapsed strip stays in the
+     flow, at the right edge. */
+  .comments-panel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    width: 260px;
+    box-shadow: var(--shadow-lift);
+  }
+
+  /* On a phone the minimap is hidden: at 180px wide it would
+     cover a third of the board, and the zoom controls stay so
+     the view is still adjustable. */
+  .minimap {
+    display: none;
+  }
+
+  .comments-panel.collapsed {
+    position: static;
+    width: auto;
+    box-shadow: none;
   }
 }
