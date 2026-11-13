@@ -236,6 +236,132 @@ export function createTextBox(
   return { id, x, y, w, h, fontSize, color, text };
 }
 
+// A box, for the geometry helpers below: anything with a
+// position and a size — a note, a shape, a text box, or a frame.
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// One named section on the board: a labeled rectangle that holds
+// other items. A frame is only a container — it has no behaviour
+// of its own. Dragging a frame moves everything whose centre is
+// inside it; deleting a frame leaves its contents where they are.
+export interface Frame {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: NoteColor;
+  title: string;
+}
+
+// The default size for a newly drawn frame. Frames hold content,
+// so they start big — a 20px frame would hold nothing.
+export const DEFAULT_FRAME_SIZE = { w: 480, h: 320 } as const;
+
+// The smallest a frame can be drawn or resized to. Same as a
+// shape: smaller than this, a frame is too small to grab.
+export const MIN_FRAME_SIZE = 20;
+
+// Builds a frame. New frames start with the title "Frame" —
+// the user renames it on the board.
+export function createFrame(
+  id: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: NoteColor,
+  title = "Frame",
+): Frame {
+  return { id, x, y, w, h, color, title };
+}
+
+// Whether a box's centre is inside a frame. The centre is what
+// counts: an item belongs to a frame when its middle is in it,
+// even if its edges stick out — that is how dragging a frame
+// decides what moves with it.
+export function boxCentreInFrame(frame: Box, box: Box): boolean {
+  const centreX = box.x + box.w / 2;
+  const centreY = box.y + box.h / 2;
+  return (
+    centreX >= frame.x &&
+    centreX <= frame.x + frame.w &&
+    centreY >= frame.y &&
+    centreY <= frame.y + frame.h
+  );
+}
+
+// One connector on the board: an arrow joining two items. The
+// endpoints are item ids — a note, shape, text box, or frame.
+// The line itself stores no position: its ends are recomputed
+// from the two items every render, so it follows them when
+// either one moves. Deleting either endpoint deletes the
+// connector too.
+export interface Connector {
+  id: string;
+  fromId: string;
+  toId: string;
+  color: NoteColor;
+}
+
+// Builds a connector between two items.
+export function createConnector(
+  id: string,
+  fromId: string,
+  toId: string,
+  color: NoteColor,
+): Connector {
+  return { id, fromId, toId, color };
+}
+
+// The middle of one edge of a box: top, bottom, left, right.
+// A connector attaches to the nearest edge of each item, so the
+// line starts and ends on an outline instead of crossing the item.
+function edgeCentres(box: Box): Array<{ x: number; y: number }> {
+  return [
+    { x: box.x + box.w / 2, y: box.y },
+    { x: box.x + box.w / 2, y: box.y + box.h },
+    { x: box.x, y: box.y + box.h / 2 },
+    { x: box.x + box.w, y: box.y + box.h / 2 },
+  ];
+}
+
+// The two points a connector line runs between: the pair of edge
+// centres — one on each item — that are closest together.
+export function connectorEndpoints(
+  from: Box,
+  to: Box,
+): { x1: number; y1: number; x2: number; y2: number } {
+  const fromPoints = edgeCentres(from);
+  const toPoints = edgeCentres(to);
+  // The box centres are the fallback, so a connector never
+  // disappears because of a zero-size item.
+  let best = {
+    x1: from.x + from.w / 2,
+    y1: from.y + from.h / 2,
+    x2: to.x + to.w / 2,
+    y2: to.y + to.h / 2,
+  };
+  let bestDistance = Infinity;
+  for (const a of fromPoints) {
+    for (const b of toPoints) {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const distance = dx * dx + dy * dy;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+      }
+    }
+  }
+  return best;
+}
+
 // The default size for a newly created note.
 export const DEFAULT_NOTE_SIZE = { w: 200, h: 200 } as const;
 
