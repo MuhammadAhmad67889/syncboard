@@ -1185,6 +1185,31 @@
   pointer-events: none;
 }
 
+/* --- Images --- */
+/* A picture on the board. The picture fills its box, and the
+   picture itself never takes the pointer — the box does, so
+   dragging works and the browser's own image drag never fights
+   it. The delete and resize controls are the same ones notes
+   and shapes use. */
+.image-item {
+  position: absolute;
+  cursor: grab;
+  touch-action: none;
+}
+
+.image-item:active {
+  cursor: grabbing;
+}
+
+.image-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+  border-radius: var(--radius-input);
+}
+
 /* --- Frames --- */
 /* A named section on the board. The fill stays paper — the
    frame's color shows in its border and its title pill — and
@@ -1693,6 +1718,29 @@
   .tool-rail .toolbar-button {
     justify-content: center;
     padding: var(--space-xs);
+  }
+
+  /* Fingers need bigger targets than a mouse: every tappable
+     control in the rail, header, sidebar, and zoom controls
+     grows to 44px, and the color dots to 32px. */
+  .toolbar-button {
+    min-height: 44px;
+  }
+
+  .color-dot {
+    width: 32px;
+    height: 32px;
+  }
+
+  .zoom-button {
+    min-height: 44px;
+  }
+
+  .board-tab-button,
+  .board-tab-delete,
+  .board-tab-rename,
+  .board-sidebar-toggle {
+    min-height: 44px;
   }
 
   /* On a phone the open comments panel floats over the board

@@ -3,10 +3,12 @@ import * as Y from "yjs";
 import {
   createConnector,
   createFrame,
+  createImage,
   createShape,
   createTextBox,
   type Connector,
   type Frame,
+  type ImageItem,
   type Note,
   type Shape,
   type TextBox,
@@ -20,6 +22,10 @@ import {
 } from "./export";
 
 const ORIGIN = "local-user-ahmad";
+
+// A 1x1 red PNG, as a data URL — small enough to keep in a test.
+const RED_PIXEL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 function sampleBoard(): BoardExport {
   const notes: Note[] = [
@@ -45,6 +51,9 @@ function sampleBoard(): BoardExport {
     createConnector("c1", "n1", "n2", "green"),
     createConnector("c2", "s1", "f1", "blue"),
   ];
+  const images: ImageItem[] = [
+    createImage("i1", 900, 120, 200, 200, RED_PIXEL),
+  ];
   return {
     version: 1,
     exportedAt: "2026-11-12T00:00:00.000Z",
@@ -54,6 +63,7 @@ function sampleBoard(): BoardExport {
     texts,
     frames,
     connectors,
+    images,
   };
 }
 
@@ -86,6 +96,11 @@ describe("boardExportToJson / parseBoardExport", () => {
         notes: [{ id: "n1", x: "nope", color: "not-a-color", text: "kept" }, { x: 1 }],
         shapes: [],
         texts: [{ id: "t1", fontSize: "huge", text: "kept too" }],
+        images: [
+          { id: "i1", x: 10, y: 20, w: 100, h: 50, dataUrl: RED_PIXEL },
+          { id: "i2", x: 0, y: 0, w: 0, h: 0, dataUrl: "not an image" },
+          { id: "i3", x: 0, y: 0, w: 0, h: 0 },
+        ],
       }),
     );
     expect(parsed).not.toBeNull();
@@ -94,6 +109,11 @@ describe("boardExportToJson / parseBoardExport", () => {
     ]);
     expect(parsed!.texts).toEqual([
       { id: "t1", x: 0, y: 0, w: 240, h: 80, fontSize: "medium", color: "yellow", text: "kept too" },
+    ]);
+    // Only the image with a real data URL survives; the other
+    // two are dropped, not imported as empty boxes.
+    expect(parsed!.images).toEqual([
+      { id: "i1", x: 10, y: 20, w: 100, h: 50, dataUrl: RED_PIXEL },
     ]);
   });
 });
@@ -116,6 +136,7 @@ describe("exportDocToBoard / applyBoardExport", () => {
     expect(restored.texts).toEqual(sampleBoard().texts);
     expect(restored.frames).toEqual(sampleBoard().frames);
     expect(restored.connectors).toEqual(sampleBoard().connectors);
+    expect(restored.images).toEqual(sampleBoard().images);
   });
 
   it("imports an old export without frames or connectors", () => {
@@ -136,6 +157,25 @@ describe("exportDocToBoard / applyBoardExport", () => {
     expect(parsed!.connectors).toEqual([]);
   });
 
+  it("imports an old export without images", () => {
+    // Exports made before images existed have no such list.
+    // They must still import — with no images — instead of
+    // being rejected.
+    const old = {
+      version: 1,
+      exportedAt: "2026-11-12T00:00:00.000Z",
+      boardId: "syncboard-demo",
+      notes: [],
+      shapes: [],
+      texts: [],
+      frames: [],
+      connectors: [],
+    };
+    const parsed = parseBoardExport(JSON.stringify(old));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.images).toEqual([]);
+  });
+
   it("replaces the board instead of merging with it", () => {
     const doc = new Y.Doc();
     applyBoardExport(doc, sampleBoard(), ORIGIN);
@@ -149,6 +189,7 @@ describe("exportDocToBoard / applyBoardExport", () => {
       texts: [],
       frames: [],
       connectors: [],
+      images: [],
     };
     applyBoardExport(doc, smaller, ORIGIN);
     const restored = exportDocToBoard(doc, "syncboard-demo");
@@ -157,6 +198,7 @@ describe("exportDocToBoard / applyBoardExport", () => {
     expect(restored.texts).toEqual([]);
     expect(restored.frames).toEqual([]);
     expect(restored.connectors).toEqual([]);
+    expect(restored.images).toEqual([]);
   });
 
   it("keeps pen points through the round-trip", () => {
