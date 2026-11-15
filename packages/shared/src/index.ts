@@ -236,6 +236,49 @@ export function createTextBox(
   return { id, x, y, w, h, fontSize, color, text };
 }
 
+// One image on the board: a picture placed by a user, shown at
+// its stored size. Position and size are in board pixels, like a
+// shape. dataUrl is the image itself, downscaled before storing
+// (see images.ts) — the document holds the bytes, so an image
+// syncs and exports like any other item. The data URL's prefix
+// (data:image/jpeg;base64,...) says what format it is.
+export interface ImageItem {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  dataUrl: string;
+}
+
+// The default size for a newly placed image. The width is the
+// downscale cap, so a fresh upload lands at the size it was
+// stored at — the height follows from the picture's aspect.
+export const DEFAULT_IMAGE_SIZE = { w: 400, h: 300 } as const;
+
+// The smallest an image can be resized to. Smaller than this,
+// the picture is too small to see or grab.
+export const MIN_IMAGE_SIZE = 40;
+
+// The longest side an uploaded image is stored at, in pixels.
+// Bigger than this, the data URL bloats the shared document for
+// no visible gain — the board shows images a few hundred pixels
+// wide.
+export const MAX_IMAGE_DIMENSION = 800;
+
+// Builds an image item. The caller passes the downscaled data
+// URL and the size it was downscaled to.
+export function createImage(
+  id: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  dataUrl: string,
+): ImageItem {
+  return { id, x, y, w, h, dataUrl };
+}
+
 // A box, for the geometry helpers below: anything with a
 // position and a size — a note, a shape, a text box, or a frame.
 export interface Box {
