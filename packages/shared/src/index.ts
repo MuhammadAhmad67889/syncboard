@@ -547,6 +547,41 @@ export interface BoardMeta {
   createdAt: string;
 }
 
+// What one snapshot holds, for the list: the board id, the name
+// the user gave it, when it was saved, and how many of each item
+// it contains. The state itself is not in the list — listing
+// stays cheap, and the state is fetched only for a restore.
+export interface SnapshotCounts {
+  notes: number;
+  shapes: number;
+  texts: number;
+  frames: number;
+  connectors: number;
+  images: number;
+}
+
+export interface BoardSnapshotMeta {
+  id: string;
+  boardId: string;
+  name: string;
+  createdAt: string;
+  counts: SnapshotCounts;
+}
+
+// One snapshot, with its state: the full board export the list
+// entry describes. The state is the BoardExport JSON (see
+// export.ts in the web app) — the server stores it as opaque
+// text and never interprets it.
+export interface BoardSnapshot extends BoardSnapshotMeta {
+  state: unknown;
+}
+
+// The most snapshots one board keeps. A snapshot holds the whole
+// board, images included, so an unbounded list would bloat the
+// database — saving past this is refused with a message to delete
+// an old one first.
+export const MAX_SNAPSHOTS_PER_BOARD = 20;
+
 // The three starter notes for a brand-new board. The ids are
 // fixed, so seeding twice still ends up with exactly one copy
 // of each note. The sync server seeds these (Phase 4) — the

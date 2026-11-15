@@ -288,6 +288,89 @@ async function handleBoardsRequest(
     json(201, { board: created });
     return true;
   }
+  // Snapshots API: GET /boards/:id/snapshots lists a board's
+  // snapshots (newest first, metadata only), POST saves one,
+  // GET /boards/:id/snapshots/:snapshotId returns one with its
+  // state (for a restore), and DELETE removes one. The client
+  // captures the state from its live document and sends the
+  // full export JSON — the server only stores it, so a snapshot
+  // is exactly what the user saw when they saved it. Restoring
+  // happens on the client (applyBoardExport), so the server
+  // needs no restore endpoint: the change syncs to everyone
+  // through the document, and the debounced save persists it.
+  // Snapshot routes come before the PATCH/DELETE board routes
+  // below: those match any path starting with /boards/, so a
+  // snapshot DELETE would otherwise be read as a board delete.
+  if (url.pathname.startsWith("/boards/") && url.pathname.includes("/snapshots")) {
+    const parts = url.pathname.split("/").filter((part) => part !== "");
+    // parts is ["boards", boardId, "snapshots"] or
+    // ["boards", boardId, "snapshots", snapshotId].
+    if (parts.length < 3 || parts[0] !== "boards" || parts[2] !== "snapshots") {
+      json(404, { error: "Not found." });
+      return true;
+    }
+    const boardId = decodeURIComponent(parts[1]);
+    const snapshotId = parts.length >= 4 ? decodeURIComponent(parts[3]) : null;
+    if (request.method === "GET" && snapshotId === null) {
+      json(200, { snapshots: boardStore.listSnapshots(boardId) });
+      return true;
+    }
+    if (request.method === "POST" && snapshotId === null) {
+      let body: unknown;
+      try {
+        body = await readJsonBody(request);
+      } catch {
+        json(400, { error: "Request body is not valid JSON." });
+        return true;
+      }
+      const name = (body as { name?: unknown } | null)?.name;
+      const state = (body as { state?: unknown } | null)?.state;
+      if (typeof name !== "string" || name.trim() === "") {
+        json(400, { error: "A snapshot name is required." });
+        return true;
+      }
+      if (typeof state !== "string" || state === "") {
+        json(400, { error: "A snapshot state is required." });
+        return true;
+      }
+      let created;
+      try {
+        created = boardStore.createSnapshot(boardId, name, state);
+      } catch (error) {
+        json(400, {
+          error: error instanceof Error ? error.message : "Could not save snapshot.",
+        });
+        return true;
+      }
+      if (!created) {
+        json(404, { error: "Board not found." });
+        return true;
+      }
+      console.log(`[snapshots] saved "${created.name}" (${created.id}) on "${boardId}"`);
+      json(201, { snapshot: created });
+      return true;
+    }
+    if (request.method === "GET" && snapshotId !== null) {
+      const snapshot = boardStore.getSnapshot(boardId, snapshotId);
+      if (!snapshot) {
+        json(404, { error: "Board or snapshot not found." });
+        return true;
+      }
+      json(200, { snapshot });
+      return true;
+    }
+    if (request.method === "DELETE" && snapshotId !== null) {
+      if (!boardStore.deleteSnapshot(boardId, snapshotId)) {
+        json(404, { error: "Board or snapshot not found." });
+        return true;
+      }
+      console.log(`[snapshots] deleted "${snapshotId}" on "${boardId}"`);
+      json(200, { deleted: true });
+      return true;
+    }
+    json(405, { error: "Method not allowed." });
+    return true;
+  }
   if (request.method === "PATCH" && url.pathname.startsWith("/boards/")) {
     const id = decodeURIComponent(url.pathname.slice("/boards/".length));
     let body: unknown;

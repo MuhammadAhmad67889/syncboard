@@ -3,7 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { DEFAULT_BOARD_ID, DEFAULT_BOARD_NAME, type BoardMeta } from "@syncboard/shared";
+import {
+  DEFAULT_BOARD_ID,
+  DEFAULT_BOARD_NAME,
+  MAX_SNAPSHOTS_PER_BOARD,
+  type BoardMeta,
+  type BoardSnapshot,
+  type BoardSnapshotMeta,
+  type SnapshotCounts,
+} from "@syncboard/shared";
 
 // One row per board: the board id, the serialized Yjs document,
 // and when it was last written. The blob is the whole document,
@@ -38,6 +46,21 @@ const CREATE_DELETED_TABLE = `
   CREATE TABLE IF NOT EXISTS deleted_boards (
     board_id TEXT PRIMARY KEY,
     deleted_at TEXT NOT NULL
+  )
+`;
+
+// One row per snapshot: the snapshot id, the board it belongs
+// to, the name the user gave it, when it was saved, and the
+// board's state as a JSON string (a BoardExport — see export.ts
+// in the web app). The state is opaque here: the server stores
+// it and hands it back, and only the client reads it.
+const CREATE_SNAPSHOTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS board_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    state TEXT NOT NULL
   )
 `;
 
@@ -123,6 +146,25 @@ export interface BoardStore {
   // false when the board does not exist. The default board is
   // never deleted — it returns false too.
   deleteBoard(boardId: string): boolean;
+  // Every snapshot of a board, newest first, for the snapshots
+  // panel. The state is not included — listing stays cheap, and
+  // the state is fetched only for a restore.
+  listSnapshots(boardId: string): BoardSnapshotMeta[];
+  // Saves a snapshot of a board's state and returns it. The
+  // state is the BoardExport JSON the client captured from its
+  // live document. Throws "Snapshot name must not be empty."
+  // for a blank name, "That snapshot is not a SyncBoard
+  // export." for a state that is not a version-1 export, and
+  // "This board already has 20 snapshots — delete an old one
+  // first." when the board is at the cap. Returns null when the
+  // board does not exist or was deleted.
+  createSnapshot(boardId: string, name: string, state: string): BoardSnapshotMeta | null;
+  // One snapshot, with its state, for a restore. Returns null
+  // when the snapshot — or its board — does not exist.
+  getSnapshot(boardId: string, snapshotId: string): BoardSnapshot | null;
+  // Deletes a snapshot. Returns false when the snapshot does
+  // not exist. Deleting a snapshot never touches the board.
+  deleteSnapshot(boardId: string, snapshotId: string): boolean;
   // Whether the board was deleted. A deleted board stays deleted
   // even if a client rejoins its room.
   isDeleted(boardId: string): boolean;
@@ -155,6 +197,7 @@ export function createBoardStore(dbPath: string): BoardStore {
   db.exec(CREATE_TABLE);
   db.exec(CREATE_META_TABLE);
   db.exec(CREATE_DELETED_TABLE);
+  db.exec(CREATE_SNAPSHOTS_TABLE);
   db.exec(CREATE_USERS_TABLE);
   const loadStatement = db.prepare("SELECT ydoc_blob FROM boards WHERE board_id = ?");
   const saveStatement = db.prepare(
@@ -188,6 +231,28 @@ export function createBoardStore(dbPath: string): BoardStore {
   const isDeletedStatement = db.prepare(
     "SELECT board_id FROM deleted_boards WHERE board_id = ?",
   );
+  const listSnapshotsStatement = db.prepare(
+    // Newest first. The tie-break is insertion order (rowid):
+    // two snapshots saved in the same millisecond share a
+    // created_at, and sorting those by id would list the older
+    // one first whenever its id sorts later.
+    "SELECT snapshot_id, board_id, name, created_at, state FROM board_snapshots WHERE board_id = ? ORDER BY created_at DESC, rowid DESC",
+  );
+  const countSnapshotsStatement = db.prepare(
+    "SELECT COUNT(*) AS total FROM board_snapshots WHERE board_id = ?",
+  );
+  const selectSnapshotStatement = db.prepare(
+    "SELECT snapshot_id, board_id, name, created_at, state FROM board_snapshots WHERE board_id = ? AND snapshot_id = ?",
+  );
+  const insertSnapshotStatement = db.prepare(
+    "INSERT INTO board_snapshots (snapshot_id, board_id, name, created_at, state) VALUES (?, ?, ?, ?, ?)",
+  );
+  const deleteSnapshotStatement = db.prepare(
+    "DELETE FROM board_snapshots WHERE board_id = ? AND snapshot_id = ?",
+  );
+  const deleteBoardSnapshotsStatement = db.prepare(
+    "DELETE FROM board_snapshots WHERE board_id = ?",
+  );
   const findUserStatement = db.prepare(
     "SELECT id, username, password_hash, color, created_at FROM users WHERE username_lower = ?",
   );
@@ -217,6 +282,74 @@ export function createBoardStore(dbPath: string): BoardStore {
 
   function rowToBoard(row: { board_id: string; name: string; created_at: string }): BoardMeta {
     return { id: row.board_id, name: row.name, createdAt: row.created_at };
+  }
+
+  // How many of each item a snapshot's state holds, for the
+  // list. Counts come from the stored export, so they are always
+  // consistent with what a restore would bring back. A state
+  // that cannot be parsed counts as empty — the create path
+  // checks the shape first, so a stored state is always
+  // well-shaped, and this only guards against a hand-edited row.
+  function countsFromState(state: string): SnapshotCounts {
+    const empty: SnapshotCounts = {
+      notes: 0,
+      shapes: 0,
+      texts: 0,
+      frames: 0,
+      connectors: 0,
+      images: 0,
+    };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(state);
+    } catch {
+      return empty;
+    }
+    if (typeof parsed !== "object" || parsed === null) return empty;
+    const record = parsed as Record<string, unknown>;
+    for (const key of Object.keys(empty) as Array<keyof SnapshotCounts>) {
+      const list = record[key];
+      empty[key] = Array.isArray(list) ? list.length : 0;
+    }
+    return empty;
+  }
+
+  function rowToSnapshotMeta(row: {
+    snapshot_id: string;
+    board_id: string;
+    name: string;
+    created_at: string;
+    state: string;
+  }): BoardSnapshotMeta {
+    return {
+      id: row.snapshot_id,
+      boardId: row.board_id,
+      name: row.name,
+      createdAt: row.created_at,
+      counts: countsFromState(row.state),
+    };
+  }
+
+  // Whether a stored state is a version-1 board export: an
+  // object with the three lists every export has. Frames,
+  // connectors, and images are optional (older exports have no
+  // such lists) — the client's full validation on restore is
+  // what catches a subtly bad export.
+  function isBoardExportState(state: string): boolean {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(state);
+    } catch {
+      return false;
+    }
+    if (typeof parsed !== "object" || parsed === null) return false;
+    const record = parsed as Record<string, unknown>;
+    return (
+      record.version === 1 &&
+      Array.isArray(record.notes) &&
+      Array.isArray(record.shapes) &&
+      Array.isArray(record.texts)
+    );
   }
 
   // The default board gets its list entry on first use, so a
@@ -286,8 +419,81 @@ export function createBoardStore(dbPath: string): BoardStore {
       if (metaStatement.get(boardId) === undefined) return false;
       deleteDocStatement.run(boardId);
       deleteMetaStatement.run(boardId);
+      // The board's snapshots go with it — a snapshot of a
+      // deleted board is useless, and keeping it would leak
+      // stored state for a board that no longer exists.
+      deleteBoardSnapshotsStatement.run(boardId);
       insertDeletedStatement.run(boardId, new Date().toISOString());
       return true;
+    },
+    listSnapshots(boardId: string): BoardSnapshotMeta[] {
+      if (isDeleted(boardId)) return [];
+      const rows = listSnapshotsStatement.all(boardId) as Array<{
+        snapshot_id: string;
+        board_id: string;
+        name: string;
+        created_at: string;
+        state: string;
+      }>;
+      return rows.map(rowToSnapshotMeta);
+    },
+    createSnapshot(boardId: string, name: string, state: string): BoardSnapshotMeta | null {
+      const trimmed = name.trim();
+      if (trimmed === "") {
+        throw new Error("Snapshot name must not be empty.");
+      }
+      if (!isBoardExportState(state)) {
+        throw new Error("That snapshot is not a SyncBoard export.");
+      }
+      // A snapshot of a deleted board — or one that never
+      // existed — reads as "not found" to the caller, which
+      // answers 404.
+      if (isDeleted(boardId)) return null;
+      if (metaStatement.get(boardId) === undefined) return null;
+      // The cap is checked at save time: a snapshot holds the
+      // whole board, so an unbounded list would bloat the
+      // database. The caller tells the user to delete an old
+      // one first.
+      const total = (countSnapshotsStatement.get(boardId) as { total: number }).total;
+      if (total >= MAX_SNAPSHOTS_PER_BOARD) {
+        throw new Error(
+          `This board already has ${MAX_SNAPSHOTS_PER_BOARD} snapshots — delete an old one first.`,
+        );
+      }
+      const id = `snapshot-${randomUUID().slice(0, 8)}`;
+      const createdAt = new Date().toISOString();
+      insertSnapshotStatement.run(id, boardId, trimmed, createdAt, state);
+      return {
+        id,
+        boardId,
+        name: trimmed,
+        createdAt,
+        counts: countsFromState(state),
+      };
+    },
+    getSnapshot(boardId: string, snapshotId: string): BoardSnapshot | null {
+      if (isDeleted(boardId)) return null;
+      const row = selectSnapshotStatement.get(boardId, snapshotId) as
+        | {
+            snapshot_id: string;
+            board_id: string;
+            name: string;
+            created_at: string;
+            state: string;
+          }
+        | undefined;
+      if (!row) return null;
+      let state: unknown;
+      try {
+        state = JSON.parse(row.state);
+      } catch {
+        return null;
+      }
+      return { ...rowToSnapshotMeta(row), state };
+    },
+    deleteSnapshot(boardId: string, snapshotId: string): boolean {
+      if (isDeleted(boardId)) return false;
+      return deleteSnapshotStatement.run(boardId, snapshotId).changes > 0;
     },
     isDeleted(boardId: string): boolean {
       return isDeleted(boardId);

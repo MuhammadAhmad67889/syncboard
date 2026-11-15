@@ -1486,6 +1486,175 @@
   gap: var(--space-xs);
 }
 
+/* The snapshots panel, beside the comments panel: the same
+   shape — a paper card column with a head, a composer, and a
+   list — so the two panels read as one family. */
+.snapshots-panel {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: 260px;
+  padding: var(--space-sm);
+  border-left: 1px solid var(--color-rule);
+  background: var(--color-paper-2);
+  overflow-y: auto;
+}
+
+.snapshots-panel.collapsed {
+  width: auto;
+  padding: var(--space-xs);
+}
+
+/* Collapsed, the "Snapshots" label hides too — it is nowrap, so
+   left showing it would set the strip's width. */
+.snapshots-panel.collapsed .snapshots-panel-title {
+  display: none;
+}
+
+.snapshots-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.snapshots-panel-title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.snapshots-empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+/* The composer is a paper card at the top of the panel: a name
+   field and a Save button. */
+.snapshot-composer {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper);
+}
+
+.snapshot-composer-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.snapshot-composer input {
+  min-height: 32px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-muted);
+  border-radius: var(--radius-input);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+.snapshot-composer input:focus-visible {
+  border-color: var(--color-ink-2);
+  outline-color: var(--color-focus);
+}
+
+.snapshot-composer-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+/* The small keys in the composer and under each snapshot: pills,
+   not the toolbar's input-radius keys, so they read as inline
+   actions rather than toolbar buttons. */
+.snapshot-composer-actions button,
+.snapshot-actions button {
+  min-height: 32px;
+  padding: var(--space-2xs) var(--space-xs);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-pill);
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur-short) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .snapshot-composer-actions button:hover,
+  .snapshot-actions button:hover {
+    background: var(--color-paper-3);
+  }
+}
+
+.snapshot-composer-actions button:disabled,
+.snapshot-actions button:disabled {
+  color: var(--color-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* The snapshot list is a plain list — the rows carry the look. */
+.snapshot-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One snapshot: name and time stacked — a snapshot name can be
+   long ("Before restore — Nov 15, 2026, 4:51 PM"), and side by
+   side with the time it wraps badly. Then what it holds, then
+   Restore and Delete. */
+.snapshot-row {
+  display: grid;
+  gap: var(--space-2xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper);
+}
+
+.snapshot-row-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.snapshot-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.snapshot-time {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.snapshot-counts {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  line-height: 1.4;
+}
+
+.snapshot-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+
 /* A pin on the canvas: a round green key with a speech bubble,
    sitting above the spot it marks. The draft pin is a dashed
    paper key instead — it is not a thread yet, and it never
@@ -1756,6 +1925,21 @@
     box-shadow: var(--shadow-lift);
   }
 
+  /* On a phone the open snapshots panel floats the same way,
+     at the right edge — a 390px screen cannot hold two 260px
+     panels side by side. When both panels are open it sits
+     above the comments panel (z-index 21), since it is the one
+     the user just opened. */
+  .snapshots-panel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 21;
+    width: 260px;
+    box-shadow: var(--shadow-lift);
+  }
+
   /* On a phone the minimap is hidden: at 180px wide it would
      cover a third of the board, and the zoom controls stay so
      the view is still adjustable. */
@@ -1764,6 +1948,12 @@
   }
 
   .comments-panel.collapsed {
+    position: static;
+    width: auto;
+    box-shadow: none;
+  }
+
+  .snapshots-panel.collapsed {
     position: static;
     width: auto;
     box-shadow: none;
