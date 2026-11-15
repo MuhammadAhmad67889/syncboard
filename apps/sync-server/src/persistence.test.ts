@@ -190,3 +190,134 @@ describe("ensureBoardMeta", () => {
     expect(found?.name).toBe(DEFAULT_BOARD_NAME);
   });
 });
+
+// A version-1 export as the client would capture it, with the
+// given number of notes and nothing else.
+function exportState(noteCount = 1): string {
+  return JSON.stringify({
+    version: 1,
+    exportedAt: "2026-11-15T00:00:00.000Z",
+    boardId: "board-x",
+    notes: Array.from({ length: noteCount }, (_, i) => ({
+      id: `n${i}`,
+      x: 0,
+      y: 0,
+      w: 200,
+      h: 200,
+      color: "yellow",
+      text: "hi",
+    })),
+    shapes: [],
+    texts: [],
+    frames: [],
+    connectors: [],
+    images: [],
+  });
+}
+
+describe("snapshots", () => {
+  it("saves a snapshot and lists it with its counts", () => {
+    const board = store.createBoard("Design");
+    const saved = store.createSnapshot(board.id, "Before redesign", exportState(2));
+    expect(saved).toEqual({
+      id: expect.any(String),
+      boardId: board.id,
+      name: "Before redesign",
+      createdAt: expect.any(String),
+      counts: { notes: 2, shapes: 0, texts: 0, frames: 0, connectors: 0, images: 0 },
+    });
+    const listed = store.listSnapshots(board.id);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toEqual(saved);
+  });
+
+  it("lists newest first", () => {
+    const board = store.createBoard("Design");
+    const first = store.createSnapshot(board.id, "First", exportState());
+    const second = store.createSnapshot(board.id, "Second", exportState());
+    const listed = store.listSnapshots(board.id);
+    expect(listed.map((item) => item.id)).toEqual([second!.id, first!.id]);
+  });
+
+  it("trims the name it stores", () => {
+    const board = store.createBoard("Design");
+    expect(store.createSnapshot(board.id, "  Before  ", exportState())?.name).toBe("Before");
+  });
+
+  it("rejects a blank name", () => {
+    const board = store.createBoard("Design");
+    expect(() => store.createSnapshot(board.id, "   ", exportState())).toThrow(
+      "Snapshot name must not be empty.",
+    );
+  });
+
+  it("rejects a state that is not a version-1 export", () => {
+    const board = store.createBoard("Design");
+    expect(() => store.createSnapshot(board.id, "Bad", "not json")).toThrow(
+      "That snapshot is not a SyncBoard export.",
+    );
+    expect(() =>
+      store.createSnapshot(board.id, "Bad", JSON.stringify({ version: 2, notes: [] })),
+    ).toThrow("That snapshot is not a SyncBoard export.");
+    expect(() =>
+      store.createSnapshot(board.id, "Bad", JSON.stringify({ version: 1, notes: [] })),
+    ).toThrow("That snapshot is not a SyncBoard export.");
+  });
+
+  it("returns null for a board that does not exist", () => {
+    expect(store.createSnapshot("board-nope-123456", "Snap", exportState())).toBeNull();
+  });
+
+  it("returns null for a board that was deleted", () => {
+    const board = store.createBoard("Design");
+    expect(store.deleteBoard(board.id)).toBe(true);
+    expect(store.createSnapshot(board.id, "Snap", exportState())).toBeNull();
+    expect(store.listSnapshots(board.id)).toEqual([]);
+  });
+
+  it("refuses the 21st snapshot", () => {
+    const board = store.createBoard("Design");
+    for (let i = 0; i < 20; i += 1) {
+      expect(store.createSnapshot(board.id, `Snap ${i}`, exportState())).not.toBeNull();
+    }
+    expect(() => store.createSnapshot(board.id, "One too many", exportState())).toThrow(
+      "This board already has 20 snapshots — delete an old one first.",
+    );
+  });
+
+  it("gets one snapshot with its state, for a restore", () => {
+    const board = store.createBoard("Design");
+    const saved = store.createSnapshot(board.id, "Snap", exportState(2));
+    const found = store.getSnapshot(board.id, saved!.id);
+    expect(found?.id).toBe(saved!.id);
+    expect(found?.name).toBe("Snap");
+    expect(found?.state).toEqual(JSON.parse(exportState(2)));
+  });
+
+  it("returns null for a snapshot that does not exist", () => {
+    const board = store.createBoard("Design");
+    expect(store.getSnapshot(board.id, "snapshot-nope")).toBeNull();
+    expect(store.getSnapshot("board-nope-123456", "snapshot-nope")).toBeNull();
+  });
+
+  it("deletes a snapshot and leaves the board alone", () => {
+    const board = store.createBoard("Design");
+    const saved = store.createSnapshot(board.id, "Snap", exportState());
+    expect(store.deleteSnapshot(board.id, saved!.id)).toBe(true);
+    expect(store.listSnapshots(board.id)).toEqual([]);
+    expect(store.listBoards().map((item) => item.id)).toContain(board.id);
+  });
+
+  it("returns false when deleting a snapshot that does not exist", () => {
+    const board = store.createBoard("Design");
+    expect(store.deleteSnapshot(board.id, "snapshot-nope")).toBe(false);
+  });
+
+  it("deletes a board's snapshots with the board", () => {
+    const board = store.createBoard("Design");
+    store.createSnapshot(board.id, "Snap", exportState());
+    expect(store.deleteBoard(board.id)).toBe(true);
+    expect(store.listSnapshots(board.id)).toEqual([]);
+    expect(store.getSnapshot(board.id, "snapshot-anything")).toBeNull();
+  });
+});

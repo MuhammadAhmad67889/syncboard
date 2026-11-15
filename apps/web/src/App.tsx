@@ -105,10 +105,22 @@ import {
   boardExportToJson,
   buildNoteMap,
   downloadBlob,
+  exportDocToBoard,
   parseBoardExport,
   renderBoardToCanvas,
   type BoardExport,
 } from "./export";
+import {
+  createSnapshot,
+  defaultSnapshotName,
+  deleteSnapshot,
+  fetchSnapshot,
+  fetchSnapshots,
+  formatSnapshotTime,
+  snapshotCountsLabel,
+  sortSnapshotsNewestFirst,
+  type BoardSnapshotMeta,
+} from "./snapshots";
 import {
   placeTemplate,
   templateBounds,
@@ -873,6 +885,20 @@ function Board({
   // list is showing. Phones start collapsed, like the boards
   // sidebar — the open panel would take half a narrow screen.
   const [commentsOpen, setCommentsOpen] = useState(() => window.innerWidth >= 640);
+  // The board's snapshots, newest first, from the server. Null
+  // while they are still loading.
+  const [snapshots, setSnapshots] = useState<BoardSnapshotMeta[] | null>(null);
+  // The snapshots panel, beside the comments panel: whether its
+  // list is showing. Phones start collapsed, for the same reason
+  // as the comments panel.
+  const [snapshotsOpen, setSnapshotsOpen] = useState(() => window.innerWidth >= 640);
+  // The name typed for the next snapshot. Empty means "use the
+  // date and time" — the input shows that as its placeholder.
+  const [snapshotName, setSnapshotName] = useState("");
+  // Whether a snapshot save, restore, or delete is in flight.
+  // The panel buttons disable while one runs, so a double click
+  // cannot save the same snapshot twice.
+  const [snapshotsBusy, setSnapshotsBusy] = useState(false);
   // The active tool. Select is the default; Escape returns here.
   const [tool, setTool] = useState<Tool>("select");
   // Everyone else on the board, from Awareness. Our own presence
@@ -1155,6 +1181,29 @@ function Board({
   // their children (nested note maps and their Y.Text, shape maps
   // and their pen-point arrays).
   const undoManagerRef = useRef<Y.UndoManager | null>(null);
+
+  // Loads this board's snapshots when the board opens. The
+  // Board remounts on a board switch (keyed by boardId), so
+  // this runs once per board. A failed load leaves an empty
+  // list and a note — the board itself still works.
+  useEffect(() => {
+    let stopped = false;
+    void fetchSnapshots(httpSyncUrl(), boardId)
+      .then((next) => {
+        if (!stopped) setSnapshots(next);
+      })
+      .catch((error: unknown) => {
+        if (!stopped) {
+          setSnapshots([]);
+          setImportMessage(
+            error instanceof Error ? error.message : "Could not load snapshots.",
+          );
+        }
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [boardId]);
 
   useEffect(() => {
     const doc = new Y.Doc();
@@ -3225,6 +3274,114 @@ function Board({
     );
   }
 
+  // Saves a snapshot of the board as it is right now. The state
+  // comes from the live document, not the server's saved copy —
+  // the server only persists every 2 seconds, so a server-side
+  // capture could miss the last few edits. An empty name means
+  // "use the date and time".
+  async function saveSnapshot(): Promise<void> {
+    const doc = docRef.current;
+    if (!doc || snapshotsBusy) return;
+    const name = snapshotName.trim() === "" ? defaultSnapshotName() : snapshotName.trim();
+    const state = exportDocToBoard(doc, boardId);
+    setSnapshotsBusy(true);
+    try {
+      const saved = await createSnapshot(httpSyncUrl(), boardId, name, state);
+      setSnapshots((prev) => sortSnapshotsNewestFirst([saved, ...(prev ?? [])]));
+      setSnapshotName("");
+      setImportMessage(`Saved snapshot "${saved.name}".`);
+    } catch (error) {
+      setImportMessage(
+        error instanceof Error ? error.message : "Could not save snapshot.",
+      );
+    } finally {
+      setSnapshotsBusy(false);
+    }
+  }
+
+  // Restores a snapshot: the board is replaced with the
+  // snapshot's state. Two guards, because this wipes the board:
+  // a confirm dialog first, and a safety copy of the current
+  // state saved before applying — so the old board is one click
+  // away in the list. The restore is one transaction stamped
+  // with the local origin, so one undo reverts it and it syncs
+  // to everyone. If the safety copy cannot be saved (the board
+  // is at its 20-snapshot cap), the restore stops — the user
+  // deletes an old snapshot and tries again.
+  async function restoreSnapshot(snapshot: BoardSnapshotMeta): Promise<void> {
+    const doc = docRef.current;
+    if (!doc || snapshotsBusy) return;
+    if (
+      !window.confirm(
+        `Restore snapshot "${snapshot.name}"? It has ${snapshotCountsLabel(snapshot.counts)}. ` +
+          `Everything on this board now will be replaced — a safety copy of the current ` +
+          `board is saved first, and Ctrl+Z undoes the restore.`,
+      )
+    ) {
+      return;
+    }
+    setSnapshotsBusy(true);
+    try {
+      const fetched = await fetchSnapshot(httpSyncUrl(), boardId, snapshot.id);
+      const parsed = parseBoardExport(JSON.stringify(fetched.state));
+      if (!parsed) {
+        setImportMessage(
+          `Could not restore "${snapshot.name}" — its saved state is not a SyncBoard export. Nothing was changed.`,
+        );
+        return;
+      }
+      const current = exportDocToBoard(doc, boardId);
+      let safety: BoardSnapshotMeta;
+      try {
+        safety = await createSnapshot(
+          httpSyncUrl(),
+          boardId,
+          `Before restore — ${defaultSnapshotName()}`,
+          current,
+        );
+      } catch {
+        setImportMessage(
+          `Could not save a safety copy — this board already has 20 snapshots. ` +
+            `Delete an old snapshot and try again. Nothing was changed.`,
+        );
+        return;
+      }
+      applyBoardExport(doc, parsed, localOrigin);
+      setSelection(null, null);
+      setSnapshots((prev) => sortSnapshotsNewestFirst([safety, ...(prev ?? [])]));
+      setImportMessage(
+        `Restored snapshot "${snapshot.name}". The board before the restore was saved as "${safety.name}".`,
+      );
+    } catch (error) {
+      setImportMessage(
+        error instanceof Error ? error.message : "Could not restore snapshot.",
+      );
+    } finally {
+      setSnapshotsBusy(false);
+    }
+  }
+
+  // Deletes a snapshot after a confirm step. Deleting a
+  // snapshot never touches the board itself.
+  async function handleDeleteSnapshot(snapshot: BoardSnapshotMeta): Promise<void> {
+    if (snapshotsBusy) return;
+    if (!window.confirm(`Delete snapshot "${snapshot.name}"? This cannot be undone.`)) {
+      return;
+    }
+    setSnapshotsBusy(true);
+    try {
+      await deleteSnapshot(httpSyncUrl(), boardId, snapshot.id);
+      setSnapshots((prev) => (prev ?? []).filter((item) => item.id !== snapshot.id));
+      setImportMessage(`Deleted snapshot "${snapshot.name}".`);
+    } catch (error) {
+      setImportMessage(
+        error instanceof Error ? error.message : "Could not delete snapshot.",
+      );
+    } finally {
+      setSnapshotsBusy(false);
+    }
+  }
+
   // Creates the board from the sidebar form and opens it. The
   // form only closes on success, so a failed create leaves the
   // typed name in place for another try.
@@ -3521,6 +3678,17 @@ function Board({
           title="Insert a template of frames and notes"
         >
           Templates
+        </button>
+        <button
+          type="button"
+          className="toolbar-button"
+          onClick={() => setSnapshotsOpen(!snapshotsOpen)}
+          aria-expanded={snapshotsOpen}
+          aria-label="Snapshots"
+          title="Save and restore named copies of this board"
+        >
+          Snapshots
+          {snapshots !== null && snapshots.length > 0 ? ` (${snapshots.length})` : ""}
         </button>
         <div className="export-controls" role="group" aria-label="Export and import">
           <button
@@ -4867,6 +5035,93 @@ function Board({
                             event.stopPropagation();
                             deleteComment(comment.id);
                           }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </aside>
+        <aside
+          className={`snapshots-panel${snapshotsOpen ? "" : " collapsed"}`}
+          aria-label="Snapshots"
+        >
+          <div className="snapshots-panel-head">
+            <span className="snapshots-panel-title">
+              Snapshots
+              {snapshots !== null && snapshots.length > 0 ? ` (${snapshots.length})` : ""}
+            </span>
+            <button
+              type="button"
+              className="board-sidebar-toggle"
+              onClick={() => setSnapshotsOpen(!snapshotsOpen)}
+              aria-expanded={snapshotsOpen}
+              aria-label={snapshotsOpen ? "Collapse snapshots panel" : "Expand snapshots panel"}
+              title={snapshotsOpen ? "Collapse snapshots" : "Expand snapshots"}
+            >
+              {snapshotsOpen ? "›" : "‹"}
+            </button>
+          </div>
+          {snapshotsOpen && (
+            <>
+              <form
+                className="snapshot-composer"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveSnapshot();
+                }}
+              >
+                <label className="snapshot-composer-label" htmlFor="snapshot-name">
+                  Save a snapshot of this board
+                </label>
+                <input
+                  id="snapshot-name"
+                  value={snapshotName}
+                  onChange={(event) => setSnapshotName(event.target.value)}
+                  placeholder={defaultSnapshotName()}
+                  aria-label="Snapshot name"
+                  maxLength={80}
+                />
+                <div className="snapshot-composer-actions">
+                  <button type="submit" disabled={snapshotsBusy}>
+                    Save snapshot
+                  </button>
+                </div>
+              </form>
+              {snapshots === null ? (
+                <p className="snapshots-empty">Loading snapshots…</p>
+              ) : snapshots.length === 0 ? (
+                <p className="snapshots-empty">
+                  No snapshots yet. Save one to keep a copy of this board you can come back to.
+                </p>
+              ) : (
+                <ul className="snapshot-list">
+                  {snapshots.map((snapshot) => (
+                    <li key={snapshot.id} className="snapshot-row">
+                      <div className="snapshot-row-head">
+                        <span className="snapshot-name">{snapshot.name}</span>
+                        <span className="snapshot-time">
+                          {formatSnapshotTime(snapshot.createdAt)}
+                        </span>
+                      </div>
+                      <p className="snapshot-counts">{snapshotCountsLabel(snapshot.counts)}</p>
+                      <div className="snapshot-actions">
+                        <button
+                          type="button"
+                          disabled={snapshotsBusy}
+                          onClick={() => void restoreSnapshot(snapshot)}
+                          title="Replace this board with this snapshot — a safety copy is saved first"
+                        >
+                          Restore
+                        </button>
+                        <button
+                          type="button"
+                          disabled={snapshotsBusy}
+                          onClick={() => void handleDeleteSnapshot(snapshot)}
                         >
                           Delete
                         </button>
