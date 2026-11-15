@@ -143,6 +143,10 @@ import {
   pinchView,
   type PinchStart,
 } from "./pinch";
+import {
+  buildWhosHereRows,
+  type WhosHereRow as WhosHereRowData,
+} from "./presence";
 import { buildBoardLink } from "./share";
 
 // The sync server address, from the environment.
@@ -892,6 +896,34 @@ function Board({
   // list is showing. Phones start collapsed, for the same reason
   // as the comments panel.
   const [snapshotsOpen, setSnapshotsOpen] = useState(() => window.innerWidth >= 640);
+  // Whether the who's-here list under the header is open, and
+  // the wrapper it lives in, so a click outside it can close it.
+  const [whosHereOpen, setWhosHereOpen] = useState(false);
+  const whosHereRef = useRef<HTMLDivElement | null>(null);
+
+  // Closes the who's-here list on Escape or a click outside it.
+  // Only bound while the list is open, so the board's own
+  // handlers are untouched the rest of the time.
+  useEffect(() => {
+    if (!whosHereOpen) return;
+    function onPointerDown(event: PointerEvent): void {
+      if (
+        whosHereRef.current &&
+        !whosHereRef.current.contains(event.target as Node)
+      ) {
+        setWhosHereOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape") setWhosHereOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [whosHereOpen]);
   // The name typed for the next snapshot. Empty means "use the
   // date and time" — the input shows that as its placeholder.
   const [snapshotName, setSnapshotName] = useState("");
@@ -3654,13 +3686,32 @@ function Board({
       <header className="board-header">
         <h1>SyncBoard</h1>
         <span className="board-name">{currentBoardName}</span>
-        <span className="header-presence" aria-label="People on this board">
-          <span className="presence-count">{presence.length + 1} online</span>
-          <PresenceChip person={user} you />
-          {presence.map((person) => (
-            <PresenceChip key={person.id} person={person} />
-          ))}
-        </span>
+        <div className="whos-here" ref={whosHereRef}>
+          <button
+            type="button"
+            className="header-presence"
+            onClick={() => setWhosHereOpen(!whosHereOpen)}
+            aria-expanded={whosHereOpen}
+            aria-label={`Who's here — ${presence.length + 1} ${presence.length + 1 === 1 ? "person" : "people"} on this board`}
+            title="See who's on this board"
+          >
+            <span className="presence-count">{presence.length + 1} online</span>
+            <PresenceChip person={user} you />
+            {presence.map((person) => (
+              <PresenceChip key={person.id} person={person} />
+            ))}
+          </button>
+          {whosHereOpen && (
+            <div className="whos-here-panel" role="dialog" aria-label="Who's here">
+              <p className="whos-here-title">Who's here ({presence.length + 1})</p>
+              <ul className="whos-here-list">
+                {buildWhosHereRows(user, presence, frames).map((row) => (
+                  <WhosHereRow key={row.id} row={row} />
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
         <button
           type="button"
           className="toolbar-button"
@@ -5135,6 +5186,30 @@ function Board({
         </aside>
         </div>
     </div>
+  );
+}
+
+// One row of the who's-here list: the avatar, the name, and what
+// the person is doing, when that is known. The activity line is
+// empty for the local user and for anyone whose pointer is off
+// the board — the row still shows them, just without a claim.
+function WhosHereRow({ row }: { row: WhosHereRowData }) {
+  return (
+    <li className="whos-here-row">
+      <span className="presence-avatar" style={{ background: row.color }}>
+        {row.name[0]}
+        <span className="presence-dot" />
+      </span>
+      <span className="whos-here-text">
+        <span className="whos-here-name">
+          {row.name}
+          {row.you ? " (you)" : ""}
+        </span>
+        {row.activity !== null && (
+          <span className="whos-here-activity">{row.activity}</span>
+        )}
+      </span>
+    </li>
   );
 }
 
