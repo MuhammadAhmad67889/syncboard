@@ -7,6 +7,7 @@ import {
   connectorEndpoints,
   type Connector,
   type Frame,
+  type ImageItem,
   type Note,
   type NoteColor,
   type Shape,
@@ -16,15 +17,16 @@ import { buildShapeMap, readShape, SHAPE_STROKE_COLORS } from "./shapes";
 import { buildTextMap, readTextBox, TEXT_COLORS } from "./texts";
 import { buildFrameMap, readFrame } from "./frames";
 import { buildConnectorMap, readConnector } from "./connectors";
+import { buildImageMap, readImage } from "./images";
 
 // ---------------------------------------------------------------------------
 // JSON export / import
 // ---------------------------------------------------------------------------
 
 // The whole board as a plain JSON object: every note, shape,
-// text box, frame, and connector with all of its fields. version
-// lets a future format change be detected instead of silently
-// misread.
+// text box, frame, connector, and image with all of its fields.
+// version lets a future format change be detected instead of
+// silently misread.
 export interface BoardExport {
   version: 1;
   exportedAt: string;
@@ -34,6 +36,7 @@ export interface BoardExport {
   texts: TextBox[];
   frames: Frame[];
   connectors: Connector[];
+  images: ImageItem[];
 }
 
 // Serializes a board to a JSON string, ready to download.
@@ -128,6 +131,22 @@ function parseConnector(value: unknown): Connector | null {
   };
 }
 
+function parseImage(value: unknown): ImageItem | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  const dataUrl = asString(value.dataUrl);
+  // An image with no picture is not an image — a bad entry is
+  // dropped, not imported as an empty box.
+  if (!dataUrl.startsWith("data:image/")) return null;
+  return {
+    id: value.id,
+    x: asNumber(value.x, 0),
+    y: asNumber(value.y, 0),
+    w: asNumber(value.w, 0),
+    h: asNumber(value.h, 0),
+    dataUrl,
+  };
+}
+
 // Parses an imported JSON string into a board. Returns null when
 // the file is not a SyncBoard export at all (bad JSON, wrong
 // version, missing lists) — the caller shows an error instead of
@@ -176,6 +195,16 @@ export function parseBoardExport(json: string): BoardExport | null {
       if (connector) connectors.push(connector);
     }
   }
+  // Images are optional in the file, like frames and
+  // connectors: exports made before they existed have no such
+  // list, and those files must still import.
+  const images: ImageItem[] = [];
+  if (Array.isArray(parsed.images)) {
+    for (const entry of parsed.images) {
+      const image = parseImage(entry);
+      if (image) images.push(image);
+    }
+  }
   return {
     version: 1,
     exportedAt: asString(parsed.exportedAt, new Date().toISOString()),
@@ -185,6 +214,7 @@ export function parseBoardExport(json: string): BoardExport | null {
     texts,
     frames,
     connectors,
+    images,
   };
 }
 
@@ -212,11 +242,13 @@ export function applyBoardExport(doc: Y.Doc, data: BoardExport, origin: unknown)
     const textsMap = doc.getMap<Y.Map<unknown>>("texts");
     const framesMap = doc.getMap<Y.Map<unknown>>("frames");
     const connectorsMap = doc.getMap<Y.Map<unknown>>("connectors");
+    const imagesMap = doc.getMap<Y.Map<unknown>>("images");
     notesMap.clear();
     shapesMap.clear();
     textsMap.clear();
     framesMap.clear();
     connectorsMap.clear();
+    imagesMap.clear();
     for (const note of data.notes) {
       notesMap.set(note.id, buildNoteMap(note));
     }
@@ -231,6 +263,9 @@ export function applyBoardExport(doc: Y.Doc, data: BoardExport, origin: unknown)
     }
     for (const connector of data.connectors) {
       connectorsMap.set(connector.id, buildConnectorMap(connector));
+    }
+    for (const image of data.images) {
+      imagesMap.set(image.id, buildImageMap(image));
     }
   }, origin);
 }
@@ -269,6 +304,12 @@ export function exportDocToBoard(doc: Y.Doc, boardId: string): BoardExport {
   doc.getMap<Y.Map<unknown>>("connectors").forEach((connectorMap, id) => {
     connectors.push(readConnector(id, connectorMap));
   });
+  const images: ImageItem[] = [];
+  doc.getMap<Y.Map<unknown>>("images").forEach((imageMap, id) => {
+    const image = readImage(id, imageMap);
+    // An image with no picture is not an image.
+    if (image.dataUrl) images.push(image);
+  });
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -278,6 +319,7 @@ export function exportDocToBoard(doc: Y.Doc, boardId: string): BoardExport {
     texts,
     frames,
     connectors,
+    images,
   };
 }
 
@@ -306,6 +348,7 @@ function contentBounds(
   shapes: Shape[],
   texts: TextBox[],
   frames: Frame[],
+  images: ImageItem[] = [],
 ): Box | null {
   let minX = Infinity;
   let minY = Infinity;
@@ -321,6 +364,7 @@ function contentBounds(
   for (const shape of shapes) include(shape);
   for (const textBox of texts) include(textBox);
   for (const frame of frames) include(frame);
+  for (const image of images) include(image);
   if (!Number.isFinite(minX)) return null;
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
@@ -533,18 +577,43 @@ function drawConnector(
   drawArrowHead(ctx, ends.x1 - offsetX, ends.y1 - offsetY, ends.x2 - offsetX, ends.y2 - offsetY);
 }
 
+// Loads one image for the PNG export. Null when it cannot be
+// loaded — a broken image is skipped, not a failed export.
+function loadImageElement(dataUrl: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = dataUrl;
+  });
+}
+
+// Draws one image onto the export canvas, at its board position
+// and size.
+function drawImageItem(
+  ctx: CanvasRenderingContext2D,
+  image: ImageItem,
+  loaded: HTMLImageElement,
+  offsetX: number,
+  offsetY: number,
+): void {
+  ctx.drawImage(loaded, image.x - offsetX, image.y - offsetY, image.w, image.h);
+}
+
 // Renders the board onto a canvas, sized to fit the content with
 // a margin. The canvas is returned, not downloaded — the caller
-// turns it into a PNG blob and triggers the download.
-export function renderBoardToCanvas(
+// turns it into a PNG blob and triggers the download. Async
+// because images must be loaded before they can be drawn.
+export async function renderBoardToCanvas(
   notes: Note[],
   shapes: Shape[],
   texts: TextBox[],
   frames: Frame[] = [],
   connectors: Connector[] = [],
-): HTMLCanvasElement {
+  images: ImageItem[] = [],
+): Promise<HTMLCanvasElement> {
   const canvas = document.createElement("canvas");
-  const bounds = contentBounds(notes, shapes, texts, frames);
+  const bounds = contentBounds(notes, shapes, texts, frames, images);
   const ctx = canvas.getContext("2d");
   if (!ctx) return canvas;
   if (!bounds) {
@@ -570,6 +639,13 @@ export function renderBoardToCanvas(
   ctx.fillRect(0, 0, contentW, contentH);
   const offsetX = bounds.x - EXPORT_PADDING;
   const offsetY = bounds.y - EXPORT_PADDING;
+  // Images load first, so the draw below never waits on one.
+  // A failed load leaves that image out of the PNG.
+  const loadedImages = new Map<string, HTMLImageElement>();
+  for (const image of images) {
+    const loaded = await loadImageElement(image.dataUrl);
+    if (loaded) loadedImages.set(image.id, loaded);
+  }
   // Frames first (they sit behind everything), then connectors
   // (between items), then the items themselves, then the frame
   // titles (above the items, as on the board).
@@ -581,6 +657,10 @@ export function renderBoardToCanvas(
   for (const frame of frames) byId.set(frame.id, frame);
   for (const connector of connectors) drawConnector(ctx, connector, byId, offsetX, offsetY);
   for (const shape of shapes) drawShape(ctx, shape, offsetX, offsetY);
+  for (const image of images) {
+    const loaded = loadedImages.get(image.id);
+    if (loaded) drawImageItem(ctx, image, loaded, offsetX, offsetY);
+  }
   for (const note of notes) drawNote(ctx, note, offsetX, offsetY);
   for (const textBox of texts) drawTextBox(ctx, textBox, offsetX, offsetY);
   for (const frame of frames) drawFrameTitle(ctx, frame, offsetX, offsetY);

@@ -8,7 +8,9 @@ import {
   DEFAULT_TEXT_SIZE,
   DOTS_PER_PERSON_OPTIONS,
   FONT_SIZE_PX,
+  MAX_IMAGE_DIMENSION,
   MIN_FRAME_SIZE,
+  MIN_IMAGE_SIZE,
   MIN_SHAPE_SIZE,
   MIN_TEXT_SIZE,
   NOTE_COLORS,
@@ -20,6 +22,7 @@ import {
   createComment,
   createConnector,
   createFrame,
+  createImage,
   createShape,
   createTextBox,
   createVote,
@@ -34,6 +37,7 @@ import {
   type Comment,
   type Connector,
   type Frame,
+  type ImageItem,
   type Note,
   type NoteColor,
   type PresenceUser,
@@ -76,6 +80,13 @@ import {
   type ConnectorMap,
 } from "./connectors";
 import {
+  buildImageMap,
+  downscaleImage,
+  isSupportedImageFile,
+  readImage,
+  type ImageMap,
+} from "./images";
+import {
   buildCommentMap,
   formatCommentTime,
   readComment,
@@ -114,6 +125,12 @@ import {
   panToCentreBoardPoint,
   viewportRect,
 } from "./minimap";
+import {
+  distanceBetween,
+  midpointOf,
+  pinchView,
+  type PinchStart,
+} from "./pinch";
 import { buildBoardLink } from "./share";
 
 // The sync server address, from the environment.
@@ -136,7 +153,7 @@ type Tool = "select" | "note" | "text" | "frame" | "connector" | "comment" | "vo
 // pen stroke lives in absolute board pixels — moving x/y alone
 // would leave the stroke behind.
 type FrameDragContent = {
-  kind: "note" | "shape" | "text" | "frame";
+  kind: "note" | "shape" | "text" | "frame" | "image";
   id: string;
   x: number;
   y: number;
@@ -817,6 +834,9 @@ function Board({
   // The text boxes on the board, from the shared "texts" map —
   // free-floating text with no background, unlike notes.
   const [texts, setTexts] = useState<TextBox[]>([]);
+  // The images on the board, from the shared "images" map —
+  // pictures placed by a user, stored downscaled as data URLs.
+  const [images, setImages] = useState<ImageItem[]>([]);
   // The frames on the board, from the shared "frames" map —
   // named sections that hold other items.
   const [frames, setFrames] = useState<Frame[]>([]);
@@ -871,6 +891,10 @@ function Board({
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   // The connector this user clicked.
   const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
+  // The image this user clicked. Images are not published to
+  // Awareness (like frames and connectors), so their selection
+  // is local only — other users do not see it.
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   // The first item of a connector being drawn: the user picked
   // this item with the Connector tool and is about to pick the
   // second one. Null when no connector is in progress.
@@ -914,6 +938,7 @@ function Board({
   const notesMapRef = useRef<Y.Map<NoteMap> | null>(null);
   const shapesMapRef = useRef<Y.Map<ShapeMap> | null>(null);
   const textsMapRef = useRef<Y.Map<TextMap> | null>(null);
+  const imagesMapRef = useRef<Y.Map<ImageMap> | null>(null);
   const framesMapRef = useRef<Y.Map<FrameMap> | null>(null);
   const connectorsMapRef = useRef<Y.Map<ConnectorMap> | null>(null);
   const commentsMapRef = useRef<Y.Map<CommentMap> | null>(null);
@@ -926,9 +951,16 @@ function Board({
   // presence ref cannot carry them.
   const selectedFrameRef = useRef<string | null>(null);
   const selectedConnectorRef = useRef<string | null>(null);
+  // The selected image, mirrored in a ref for the same reason:
+  // images are not published to Awareness either.
+  const selectedImageRef = useRef<string | null>(null);
   // The hidden file input for Import JSON — the header button
   // opens it, and the change handler reads the picked file.
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  // The hidden file input for adding an image — the tool-rail
+  // Image button opens it, and the change handler reads the
+  // picked file.
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   // The provider's Awareness instance (null only if the provider
   // was created with awareness disabled — we never do that).
   const awarenessRef = useRef<HocuspocusProvider["awareness"]>(null);
@@ -1048,6 +1080,27 @@ function Board({
     textW: number;
     textH: number;
   } | null>(null);
+  // The image drag in progress, if any — same shape as a note
+  // drag.
+  const imageDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    imageX: number;
+    imageY: number;
+  } | null>(null);
+  // The image resize in progress, if any. The aspect is the
+  // image's width over height at the start, so the resize keeps
+  // the picture's shape instead of stretching it.
+  const imageResizeRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    imageW: number;
+    aspect: number;
+  } | null>(null);
   // The shape being drawn on empty canvas, if any. For a pen
   // stroke, points holds every point so far, so the bounding box
   // can be recomputed as the stroke grows.
@@ -1089,6 +1142,14 @@ function Board({
     frameW: number;
     frameH: number;
   } | null>(null);
+  // The fingers currently on the board, by pointer id — tracked
+  // for pinch-to-zoom. Pointer events bubble to the board from
+  // notes and shapes too, so a second finger anywhere on the
+  // board is seen here.
+  const boardPointersRef = useRef(new Map<number, ShapePoint>());
+  // The pinch in progress, if any: the view and finger positions
+  // from the moment the second finger landed.
+  const pinchRef = useRef<PinchStart | null>(null);
   // The per-user UndoManager: it tracks only changes stamped
   // with localOrigin, on the shared notes and shapes maps and
   // their children (nested note maps and their Y.Text, shape maps
@@ -1128,6 +1189,8 @@ function Board({
     shapesMapRef.current = shapesMap;
     const textsMap = doc.getMap<TextMap>("texts");
     textsMapRef.current = textsMap;
+    const imagesMap = doc.getMap<ImageMap>("images");
+    imagesMapRef.current = imagesMap;
     const framesMap = doc.getMap<FrameMap>("frames");
     framesMapRef.current = framesMap;
     const connectorsMap = doc.getMap<ConnectorMap>("connectors");
@@ -1143,14 +1206,15 @@ function Board({
 
     // Per-user undo: the manager only tracks transactions stamped
     // with our own origin, so another user's edits never land on
-    // our undo stack. It watches all seven shared roots — notes,
-    // shapes, text boxes, frames, connectors, comments, and
-    // votes — so one undo stack covers all of them. The "voting"
-    // map is not watched: starting or ending a session is never
-    // an undo step, while placing a dot and clearing votes are.
-    // Drags and typing batch into one step while they keep coming within the capture timeout (500 ms).
+    // our undo stack. It watches all eight shared roots — notes,
+    // shapes, text boxes, images, frames, connectors, comments,
+    // and votes — so one undo stack covers all of them. The
+    // "voting" map is not watched: starting or ending a session
+    // is never an undo step, while placing a dot and clearing
+    // votes are. Drags and typing batch into one step while they
+    // keep coming within the capture timeout (500 ms).
     const undoManager = new Y.UndoManager(
-      [notesMap, shapesMap, textsMap, framesMap, connectorsMap, commentsMap, votesMap],
+      [notesMap, shapesMap, textsMap, imagesMap, framesMap, connectorsMap, commentsMap, votesMap],
       {
         trackedOrigins: new Set([localOrigin]),
       },
@@ -1200,6 +1264,22 @@ function Board({
 
     textsMap.observeDeep(snapshotTexts);
     snapshotTexts();
+
+    // Re-reads every image from the shared document into React
+    // state. observeDeep fires for image moves, resizes, and
+    // deletions alike.
+    function snapshotImages(): void {
+      const next: ImageItem[] = [];
+      imagesMap.forEach((imageMap, id) => {
+        const image = readImage(id, imageMap);
+        // An image with no picture is not an image.
+        if (image.dataUrl) next.push(image);
+      });
+      setImages(next);
+    }
+
+    imagesMap.observeDeep(snapshotImages);
+    snapshotImages();
 
     // Re-reads every frame from the shared document into React
     // state. observeDeep fires for frame moves, resizes, color
@@ -1299,6 +1379,7 @@ function Board({
       notesMap.unobserveDeep(snapshot);
       shapesMap.unobserveDeep(snapshotShapes);
       textsMap.unobserveDeep(snapshotTexts);
+      imagesMap.unobserveDeep(snapshotImages);
       framesMap.unobserveDeep(snapshotFrames);
       connectorsMap.unobserveDeep(snapshotConnectors);
       commentsMap.unobserveDeep(snapshotComments);
@@ -1310,6 +1391,7 @@ function Board({
       notesMapRef.current = null;
       shapesMapRef.current = null;
       textsMapRef.current = null;
+      imagesMapRef.current = null;
       framesMapRef.current = null;
       connectorsMapRef.current = null;
       commentsMapRef.current = null;
@@ -1340,7 +1422,7 @@ function Board({
   // the Connector tool, a press picks an endpoint instead, so
   // the handle does not drag.
   function startDrag(event: React.PointerEvent<HTMLDivElement>, note: Note): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       id: note.id,
@@ -1395,6 +1477,26 @@ function Board({
     };
   }
 
+  // Drops an image file onto the board: the image lands at the
+  // drop point. Only the first image file is taken; anything else
+  // is ignored with a message. The dragover below must prevent
+  // its default, or the drop never fires — and the drop must
+  // prevent its default too, or the browser navigates to the
+  // dropped file instead.
+  function handleBoardDrop(event: React.DragEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files ?? []);
+    const file = files.find((item) => item.type.startsWith("image/"));
+    if (!file) {
+      if (files.length > 0) {
+        setImportMessage("Only image files can be dropped on the board.");
+      }
+      return;
+    }
+    const point = toBoardCoords(event.clientX, event.clientY);
+    void addImageFile(file, point.x, point.y);
+  }
+
   // A press on empty board — the board or canvas itself, or a
   // frame's background. A frame is a container, not a wall: the
   // creation tools work inside it exactly as they do on open
@@ -1404,6 +1506,8 @@ function Board({
   // lands on the frame itself (its title, delete, and resize
   // controls stop the press before it gets here).
   function handleEmptyCanvasPress(event: React.PointerEvent<HTMLDivElement>): void {
+    // A pinch is in progress: no creation tool starts from a press.
+    if (pinchRef.current) return;
     if (tool === "rect" || tool === "ellipse" || tool === "line" || tool === "pen") {
       startDraw(event);
     } else if (tool === "frame") {
@@ -1494,7 +1598,7 @@ function Board({
       w: boardSize.w / zoom,
       h: boardSize.h / zoom,
     };
-    const bounds = minimapBounds([...frames, ...notes, ...shapes], viewport);
+    const bounds = minimapBounds([...frames, ...notes, ...shapes, ...images], viewport);
     return { bounds, scale: minimapScale(bounds, MINIMAP_WIDTH, MINIMAP_HEIGHT), viewport };
   }
 
@@ -1522,7 +1626,7 @@ function Board({
   // captured on the minimap, so the drag keeps going even if
   // it slides off the minimap's edge.
   function startMinimapDrag(event: React.PointerEvent<HTMLDivElement>): void {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || pinchRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     minimapDragRef.current = { pointerId: event.pointerId };
     panMinimapTo(event.clientX, event.clientY);
@@ -1572,6 +1676,104 @@ function Board({
     }
   }
 
+  // Cancels whatever single-pointer gesture is in progress, so a
+  // pinch can take over cleanly. A draw is removed entirely — the
+  // shape or frame was only just created, so leaving it would
+  // drop a dot on the board. A drag or a pan only clears its
+  // ref: a partial move the user already made stays, because
+  // it is real work.
+  function cancelBoardGesture(): void {
+    const draw = drawRef.current;
+    if (draw) {
+      drawRef.current = null;
+      deleteShape(draw.shapeId);
+    }
+    const frameDraw = frameDrawRef.current;
+    if (frameDraw) {
+      frameDrawRef.current = null;
+      deleteFrame(frameDraw.frameId);
+    }
+    dragRef.current = null;
+    resizeRef.current = null;
+    shapeDragRef.current = null;
+    shapeResizeRef.current = null;
+    textDragRef.current = null;
+    textResizeRef.current = null;
+    imageDragRef.current = null;
+    imageResizeRef.current = null;
+    frameDragRef.current = null;
+    frameResizeRef.current = null;
+    minimapDragRef.current = null;
+    if (panRef.current) {
+      panRef.current = null;
+      setPanning(false);
+    }
+    undoManagerRef.current?.stopCapturing();
+  }
+
+  // Records a finger on the board. When a second finger lands,
+  // a pinch starts and takes over from any gesture in progress —
+  // the second finger means zoom, not a second drag.
+  function trackBoardPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
+    boardPointersRef.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (boardPointersRef.current.size === 2 && !pinchRef.current) {
+      startPinch();
+    }
+  }
+
+  // Starts a pinch from the two fingers on the board, cancelling
+  // whatever gesture the first finger was doing.
+  function startPinch(): void {
+    const pointers = [...boardPointersRef.current.values()];
+    if (pointers.length < 2) return;
+    const mid = midpointOf(pointers[0], pointers[1]);
+    pinchRef.current = {
+      zoom,
+      panX: pan.x,
+      panY: pan.y,
+      midX: mid.x,
+      midY: mid.y,
+      distance: distanceBetween(pointers[0], pointers[1]),
+    };
+    cancelBoardGesture();
+  }
+
+  // Moves an active pinch: the zoom follows the change in finger
+  // distance, and the board follows the fingers' midpoint.
+  function movePinch(event: React.PointerEvent<HTMLDivElement>): void {
+    const pinch = pinchRef.current;
+    if (!pinch) return;
+    if (!boardPointersRef.current.has(event.pointerId)) return;
+    boardPointersRef.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    const pointers = [...boardPointersRef.current.values()];
+    if (pointers.length < 2) return;
+    const view = pinchView(
+      pinch,
+      midpointOf(pointers[0], pointers[1]),
+      distanceBetween(pointers[0], pointers[1]),
+      MIN_ZOOM,
+      MAX_ZOOM,
+    );
+    setZoom(view.zoom);
+    setPan({ x: view.panX, y: view.panY });
+  }
+
+  // A finger lifted: forget it, and end the pinch once fewer
+  // than two fingers are left. The remaining finger does not
+  // resume the gesture the pinch cancelled.
+  function endPinch(event: React.PointerEvent<HTMLDivElement>): void {
+    boardPointersRef.current.delete(event.pointerId);
+    if (boardPointersRef.current.size < 2) {
+      pinchRef.current = null;
+    }
+  }
+
   // Publishes the local user's current presence (cursor +
   // selection) to everyone else. Called after any local change.
   function publishPresence(): void {
@@ -1611,24 +1813,27 @@ function Board({
   // Sets the selection in state and in Awareness at once, so
   // the outline, the presence bar, and other users stay in sync.
   // Only one thing is selected at a time — a note, a shape, a
-  // text box, a frame, or a connector. Frames and connectors are
-  // local only: presence tracks notes, shapes, and text boxes,
-  // so their selection lives in state and in the refs the
-  // keyboard handler reads, not in Awareness.
+  // text box, a frame, a connector, or an image. Frames,
+  // connectors, and images are local only: presence tracks notes,
+  // shapes, and text boxes, so their selection lives in state
+  // and in the refs the keyboard handler reads, not in Awareness.
   function setSelection(
     noteId: string | null,
     shapeId: string | null,
     textId: string | null = null,
     frameId: string | null = null,
     connectorId: string | null = null,
+    imageId: string | null = null,
   ): void {
     setSelectedNoteId(noteId);
     setSelectedShapeId(shapeId);
     setSelectedTextId(textId);
     setSelectedFrameId(frameId);
     setSelectedConnectorId(connectorId);
+    setSelectedImageId(imageId);
     selectedFrameRef.current = frameId;
     selectedConnectorRef.current = connectorId;
+    selectedImageRef.current = imageId;
     localPresenceRef.current.selectedNoteIds = noteId ? [noteId] : [];
     localPresenceRef.current.selectedShapeIds = shapeId ? [shapeId] : [];
     localPresenceRef.current.selectedTextIds = textId ? [textId] : [];
@@ -1923,7 +2128,7 @@ function Board({
   // underneath stays free for text editing — only the handle drags.
   // With the Connector tool, a press picks an endpoint instead.
   function startTextDrag(event: React.PointerEvent<HTMLDivElement>, textBox: TextBox): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     textDragRef.current = {
       id: textBox.id,
@@ -1964,7 +2169,7 @@ function Board({
   // Starts a resize from the text box's bottom-right handle.
   // With the Connector tool, a press picks an endpoint instead.
   function startTextResize(event: React.PointerEvent<HTMLDivElement>, textBox: TextBox): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     textResizeRef.current = {
       id: textBox.id,
@@ -2196,7 +2401,7 @@ function Board({
   // there is no text to edit, so the entire shape grabs. With
   // the Connector tool, a press picks an endpoint instead.
   function startShapeDrag(event: React.PointerEvent<HTMLDivElement>, shape: Shape): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     shapeDragRef.current = {
       id: shape.id,
@@ -2240,7 +2445,7 @@ function Board({
   // not resize. With the Connector tool, a press picks an
   // endpoint instead.
   function startShapeResize(event: React.PointerEvent<HTMLDivElement>, shape: Shape): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     shapeResizeRef.current = {
@@ -2278,6 +2483,163 @@ function Board({
   function endShapeResize(event: React.PointerEvent<HTMLDivElement>): void {
     if (shapeResizeRef.current?.pointerId === event.pointerId) {
       shapeResizeRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Clicking an image selects it, and clears everything else.
+  function selectImage(imageId: string): void {
+    if (selectedImageId === imageId) return;
+    setSelection(null, null, null, null, null, imageId);
+  }
+
+  // Adds an image file to the board, centred on the given board
+  // point. The file is downscaled first, so the shared document
+  // only ever holds a small data URL. A file that is not a
+  // supported image, or too big, is rejected with a message
+  // instead of landing on the board.
+  async function addImageFile(file: File, centreX: number, centreY: number): Promise<void> {
+    if (!isSupportedImageFile(file)) {
+      setImportMessage(
+        "That file is not an image under 10 MB — nothing was added.",
+      );
+      return;
+    }
+    let downscaled: { dataUrl: string; width: number; height: number };
+    try {
+      downscaled = await downscaleImage(file, MAX_IMAGE_DIMENSION);
+    } catch {
+      setImportMessage("Could not read that image — nothing was added.");
+      return;
+    }
+    const doc = docRef.current;
+    const imagesMap = imagesMapRef.current;
+    if (!doc || !imagesMap) return;
+    const id = crypto.randomUUID();
+    const image = createImage(
+      id,
+      Math.max(0, Math.round(centreX - downscaled.width / 2)),
+      Math.max(0, Math.round(centreY - downscaled.height / 2)),
+      downscaled.width,
+      downscaled.height,
+      downscaled.dataUrl,
+    );
+    doc.transact(() => {
+      imagesMap.set(id, buildImageMap(image));
+    }, localOrigin);
+    setSelection(null, null, null, null, null, id);
+    setImportMessage(null);
+  }
+
+  // Adds the file from the picker at the centre of the current
+  // view, so it lands where the user is looking.
+  function addImageFromPicker(file: File): void {
+    const board = boardRef.current;
+    if (!board) return;
+    const rect = board.getBoundingClientRect();
+    const point = toBoardCoords(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    void addImageFile(file, point.x, point.y);
+  }
+
+  // Removes an image from the shared map, so it disappears in
+  // every tab. If it was the selected image, the selection
+  // clears too.
+  function deleteImage(imageId: string): void {
+    const doc = docRef.current;
+    const imagesMap = imagesMapRef.current;
+    if (!doc || !imagesMap || !imagesMap.has(imageId)) return;
+    doc.transact(() => {
+      imagesMap.delete(imageId);
+    }, localOrigin);
+    if (selectedImageRef.current === imageId) {
+      setSelection(null, null);
+    }
+  }
+
+  // Starts a drag from an image. The whole image is the handle —
+  // there is no text to edit, so the entire image grabs. With
+  // the Connector or Vote tool, a press does nothing instead:
+  // images are neither endpoints nor vote targets.
+  function startImageDrag(event: React.PointerEvent<HTMLDivElement>, image: ImageItem): void {
+    if (event.button !== 0 || tool === "connector" || tool === "vote" || pinchRef.current) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    imageDragRef.current = {
+      id: image.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      imageX: image.x,
+      imageY: image.y,
+    };
+  }
+
+  function moveImageDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    const drag = imageDragRef.current;
+    const doc = docRef.current;
+    const imagesMap = imagesMapRef.current;
+    if (!drag || !doc || !imagesMap || event.pointerId !== drag.pointerId) return;
+    const imageMap = imagesMap.get(drag.id);
+    if (!imageMap) return;
+    // Screen pixels become board pixels by dividing by the zoom —
+    // at 200% a 20px mouse move is only 10 board pixels.
+    const nextX = Math.max(0, drag.imageX + (event.clientX - drag.startX) / zoom);
+    const nextY = Math.max(0, drag.imageY + (event.clientY - drag.startY) / zoom);
+    // Same batching as a note drag: the whole drag lands on one
+    // undo step.
+    doc.transact(() => {
+      imageMap.set("x", Math.round(nextX));
+      imageMap.set("y", Math.round(nextY));
+    }, localOrigin);
+  }
+
+  function endImageDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (imageDragRef.current?.pointerId === event.pointerId) {
+      imageDragRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
+  // Starts a resize from the image's bottom-right handle. The
+  // resize keeps the aspect ratio: the width follows the
+  // pointer, and the height follows from the aspect, so the
+  // picture never stretches. With the Connector or Vote tool, a
+  // press does nothing instead.
+  function startImageResize(event: React.PointerEvent<HTMLDivElement>, image: ImageItem): void {
+    if (event.button !== 0 || tool === "connector" || tool === "vote" || pinchRef.current) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    imageResizeRef.current = {
+      id: image.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      imageW: image.w,
+      aspect: image.h > 0 ? image.w / image.h : 1,
+    };
+  }
+
+  function moveImageResize(event: React.PointerEvent<HTMLDivElement>): void {
+    const resize = imageResizeRef.current;
+    const doc = docRef.current;
+    const imagesMap = imagesMapRef.current;
+    if (!resize || !doc || !imagesMap || event.pointerId !== resize.pointerId) return;
+    const imageMap = imagesMap.get(resize.id);
+    if (!imageMap) return;
+    const nextW = Math.max(
+      MIN_IMAGE_SIZE,
+      resize.imageW + (event.clientX - resize.startX) / zoom,
+    );
+    const nextH = Math.max(MIN_IMAGE_SIZE, Math.round(nextW / resize.aspect));
+    // Same batching as a drag: rapid moves merge into one undo step.
+    doc.transact(() => {
+      imageMap.set("w", Math.round(nextW));
+      imageMap.set("h", nextH);
+    }, localOrigin);
+  }
+
+  function endImageResize(event: React.PointerEvent<HTMLDivElement>): void {
+    if (imageResizeRef.current?.pointerId === event.pointerId) {
+      imageResizeRef.current = null;
       undoManagerRef.current?.stopCapturing();
     }
   }
@@ -2377,6 +2739,11 @@ function Board({
         contents.push({ kind: "text", id: textBox.id, x: textBox.x, y: textBox.y });
       }
     }
+    for (const image of images) {
+      if (boxCentreInFrame(frame, image)) {
+        contents.push({ kind: "image", id: image.id, x: image.x, y: image.y });
+      }
+    }
     for (const other of frames) {
       if (other.id !== frame.id && boxCentreInFrame(frame, other)) {
         contents.push({ kind: "frame", id: other.id, x: other.x, y: other.y });
@@ -2391,7 +2758,7 @@ function Board({
   // move while the user is renaming it). With the Connector tool,
   // a press picks an endpoint instead.
   function startFrameDrag(event: React.PointerEvent<HTMLDivElement>, frame: Frame): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     frameDragRef.current = {
       id: frame.id,
@@ -2411,8 +2778,9 @@ function Board({
     const notesMap = notesMapRef.current;
     const shapesMap = shapesMapRef.current;
     const textsMap = textsMapRef.current;
+    const imagesMap = imagesMapRef.current;
     const framesMap = framesMapRef.current;
-    if (!notesMap || !shapesMap || !textsMap || !framesMap) return;
+    if (!notesMap || !shapesMap || !textsMap || !imagesMap || !framesMap) return;
     const frameMap = framesMap.get(drag.id);
     if (!frameMap) return;
     // Screen pixels become board pixels by dividing by the zoom —
@@ -2456,6 +2824,9 @@ function Board({
         } else if (item.kind === "text") {
           textsMap.get(item.id)?.set("x", Math.round(item.x + moveX));
           textsMap.get(item.id)?.set("y", Math.round(item.y + moveY));
+        } else if (item.kind === "image") {
+          imagesMap.get(item.id)?.set("x", Math.round(item.x + moveX));
+          imagesMap.get(item.id)?.set("y", Math.round(item.y + moveY));
         } else {
           framesMap.get(item.id)?.set("x", Math.round(item.x + moveX));
           framesMap.get(item.id)?.set("y", Math.round(item.y + moveY));
@@ -2477,7 +2848,7 @@ function Board({
   // stops being inside it. With the Connector tool, a press picks
   // an endpoint instead.
   function startFrameResize(event: React.PointerEvent<HTMLDivElement>, frame: Frame): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     frameResizeRef.current = {
@@ -2537,6 +2908,9 @@ function Board({
   // connector on that item; the second click on a different item
   // creates it. Clicking the same item again cancels it.
   function pickConnectorEndpoint(itemId: string): void {
+    // A pinch is in progress: a finger landing on an item must
+    // not pick a connector endpoint.
+    if (pinchRef.current) return;
     if (!connectorPendingFromId) {
       setConnectorPendingFromId(itemId);
       return;
@@ -2621,6 +2995,9 @@ function Board({
   // this session's allocation. Each dot is its own undo step,
   // so Ctrl+Z takes back one dot at a time.
   function placeVote(itemId: string): void {
+    // A pinch is in progress: a finger landing on an item must
+    // not drop a vote dot.
+    if (pinchRef.current) return;
     const doc = docRef.current;
     const votesMap = votesMapRef.current;
     if (!doc || !votesMap) return;
@@ -2697,7 +3074,7 @@ function Board({
   // Starts a resize from the note's bottom-right handle. With
   // the Connector tool, a press picks an endpoint instead.
   function startResize(event: React.PointerEvent<HTMLDivElement>, note: Note): void {
-    if (event.button !== 0 || tool === "connector") return;
+    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeRef.current = {
       id: note.id,
@@ -2772,9 +3149,11 @@ function Board({
   }
 
   // Downloads the board as a PNG image, rendered from the synced
-  // board state (see export.ts for why it is drawn, not screenshotted).
-  function exportPng(): void {
-    const canvas = renderBoardToCanvas(notes, shapes, texts, frames, connectors);
+  // board state (see export.ts for why it is drawn, not
+  // screenshotted). Async because images must be loaded before
+  // they can be drawn.
+  async function exportPng(): Promise<void> {
+    const canvas = await renderBoardToCanvas(notes, shapes, texts, frames, connectors, images);
     canvas.toBlob((blob) => {
       if (!blob) {
         setImportMessage("Could not make a PNG from this board.");
@@ -2786,8 +3165,8 @@ function Board({
   }
 
   // Downloads the whole board — notes, shapes, text boxes,
-  // frames, and connectors — as a JSON file, so it can be saved
-  // or moved to another board.
+  // frames, connectors, and images — as a JSON file, so it can
+  // be saved or moved to another board.
   function exportJson(): void {
     const data: BoardExport = {
       version: 1,
@@ -2798,6 +3177,7 @@ function Board({
       texts,
       frames,
       connectors,
+      images,
     };
     downloadBlob(
       `syncboard-${boardId}.json`,
@@ -2826,7 +3206,8 @@ function Board({
       !window.confirm(
         `Replace this board with "${file.name}"? It has ${parsed.notes.length} notes, ` +
           `${parsed.shapes.length} shapes, ${parsed.texts.length} text boxes, ` +
-          `${parsed.frames.length} frames, and ${parsed.connectors.length} connectors. ` +
+          `${parsed.frames.length} frames, ${parsed.connectors.length} connectors, and ` +
+          `${parsed.images.length} images. ` +
           `Everything on this board now will be gone — press Ctrl+Z to undo the import.`,
       )
     ) {
@@ -2838,8 +3219,9 @@ function Board({
     setSelection(null, null);
     setImportMessage(
       `Imported ${parsed.notes.length} notes, ${parsed.shapes.length} shapes, ` +
-        `${parsed.texts.length} text boxes, ${parsed.frames.length} frames, and ` +
-        `${parsed.connectors.length} connectors from "${file.name}".`,
+        `${parsed.texts.length} text boxes, ${parsed.frames.length} frames, ` +
+        `${parsed.connectors.length} connectors, and ${parsed.images.length} images ` +
+        `from "${file.name}".`,
     );
   }
 
@@ -2887,9 +3269,9 @@ function Board({
 
   // Keyboard shortcuts: Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo,
   // Delete / Backspace deletes the selected note, shape, text
-  // box, frame, or connector, Escape returns to the Select tool
-  // and cancels a connector in progress. Delete only fires when
-  // the user is not typing in a note's textarea.
+  // box, frame, connector, or image, Escape returns to the Select
+  // tool and cancels a connector in progress. Delete only fires
+  // when the user is not typing in a note's textarea.
   // Ctrl+Z is caught even while typing: the textarea is controlled
   // by the shared document, so the browser's native text undo
   // would fight React — the UndoManager is the one that works.
@@ -2924,6 +3306,7 @@ function Board({
         const selectedText = localPresenceRef.current.selectedTextIds[0];
         const selectedFrame = selectedFrameRef.current;
         const selectedConnector = selectedConnectorRef.current;
+        const selectedImage = selectedImageRef.current;
         if (selectedNote) {
           event.preventDefault();
           deleteNote(selectedNote);
@@ -2939,6 +3322,9 @@ function Board({
         } else if (selectedConnector) {
           event.preventDefault();
           deleteConnector(selectedConnector);
+        } else if (selectedImage) {
+          event.preventDefault();
+          deleteImage(selectedImage);
         }
       }
     }
@@ -3060,14 +3446,17 @@ function Board({
         )
       : 0;
 
-  // What the minimap draws: every frame, note, and shape, in
-  // that order — frames underneath, so the items inside them
+  // What the minimap draws: every frame, note, shape, and image,
+  // in that order — frames underneath, so the items inside them
   // stay visible. Comments and votes are not shown: they are
   // annotations on items, not items on the board.
   const minimapItems: Array<Box & { id: string; color: NoteColor; kind: string }> = [
     ...frames.map((frame) => ({ ...frame, kind: "frame" })),
     ...notes.map((note) => ({ ...note, kind: "note" })),
     ...shapes.map((shape) => ({ ...shape, kind: "shape" })),
+    // Images have no color — the minimap draws them grey, so the
+    // color here is a placeholder the image branch never reads.
+    ...images.map((image) => ({ ...image, color: "yellow" as NoteColor, kind: "image" })),
   ];
   const minimapGeometryValue = minimapGeometry();
   const minimapViewportRect = viewportRect(
@@ -3137,7 +3526,7 @@ function Board({
           <button
             type="button"
             className="toolbar-button"
-            onClick={exportPng}
+            onClick={() => void exportPng()}
             title="Download the board as a PNG image"
           >
             {ACTION_ICONS.download}
@@ -3172,6 +3561,19 @@ function Board({
               // Reset so picking the same file again still fires.
               event.target.value = "";
               if (file) void importJsonFile(file);
+            }}
+          />
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            aria-label="Add an image to the board"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              // Reset so picking the same file again still fires.
+              event.target.value = "";
+              if (file) addImageFromPicker(file);
             }}
           />
         </div>
@@ -3450,6 +3852,16 @@ function Board({
           >
             + <span className="tool-label">Note</span>
           </button>
+          <button
+            type="button"
+            className="toolbar-button"
+            onClick={() => imageInputRef.current?.click()}
+            aria-label="Add image"
+            title="Add an image to the board"
+          >
+            {ACTION_ICONS.upload}
+            <span className="tool-label">Image</span>
+          </button>
           <span className="toolbar-divider" aria-hidden="true" />
           <div className="tool-picker" role="group" aria-label="Drawing tools">
             {TOOLS.map((item) => (
@@ -3543,6 +3955,7 @@ function Board({
           ref={boardRef}
           onPointerMove={(event) => {
             trackCursor(event);
+            movePinch(event);
             movePan(event);
             moveDraw(event);
             moveFrameDraw(event);
@@ -3550,23 +3963,38 @@ function Board({
           }}
           onPointerLeave={clearCursor}
           onPointerDown={(event) => {
+            trackBoardPointerDown(event);
+            // A pinch is in progress: no other gesture starts,
+            // and any drag a child handler just started is
+            // cancelled at once.
+            if (pinchRef.current) {
+              cancelBoardGesture();
+              return;
+            }
             // A press on empty board (not on a note, shape, or frame).
             if (event.target === event.currentTarget || event.target === canvasRef.current) {
               handleEmptyCanvasPress(event);
             }
           }}
           onPointerUp={(event) => {
+            endPinch(event);
             endPan(event);
             endDraw(event);
             endFrameDraw(event);
             endTextDrag(event);
           }}
           onPointerCancel={(event) => {
+            endPinch(event);
             endPan(event);
             endDraw(event);
             endFrameDraw(event);
             endTextDrag(event);
           }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={handleBoardDrop}
           onDoubleClick={createNoteAtPoint}
         >
           <div
@@ -3697,7 +4125,7 @@ function Board({
                       x2={ends.x2}
                       y2={ends.y2}
                       onPointerDown={(event) => {
-                        if (event.button !== 0 || tool === "connector") return;
+                        if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
                         selectConnector(connector.id);
                       }}
                     />
@@ -3711,7 +4139,7 @@ function Board({
                       strokeWidth={isSelected ? 4 : 2.5}
                       markerEnd={`url(#connector-arrow-${connector.color})`}
                       onPointerDown={(event) => {
-                        if (event.button !== 0 || tool === "connector") return;
+                        if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
                         selectConnector(connector.id);
                       }}
                     />
@@ -3870,6 +4298,63 @@ function Board({
                           aria-label="Resize shape"
                         />
                       )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            {images.map((image) => {
+              const isSelected = selectedImageId === image.id;
+              return (
+                <div
+                  key={image.id}
+                  className="image-item"
+                  data-image-id={image.id}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    // Images are neither connector endpoints nor
+                    // vote targets, so those tools do nothing
+                    // here. A creation tool does nothing either —
+                    // the press never reaches the board, so no
+                    // note or shape is created under the image.
+                    if (tool !== "select") return;
+                    selectImage(image.id);
+                    startImageDrag(event, image);
+                  }}
+                  onPointerMove={moveImageDrag}
+                  onPointerUp={endImageDrag}
+                  style={{
+                    left: image.x,
+                    top: image.y,
+                    width: image.w,
+                    height: image.h,
+                    // A selected image gets an accent outline,
+                    // like a selected shape.
+                    ...(isSelected
+                      ? { boxShadow: "0 0 0 2px var(--color-accent)" }
+                      : undefined),
+                  }}
+                >
+                  <img src={image.dataUrl} alt="Uploaded image" draggable={false} />
+                  {isSelected && (
+                    <>
+                      <button
+                        type="button"
+                        className="note-delete"
+                        onClick={() => deleteImage(image.id)}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        aria-label="Delete image"
+                        title="Delete image (Delete key)"
+                      >
+                        ×
+                      </button>
+                      <div
+                        className="note-resize"
+                        onPointerDown={(event) => startImageResize(event, image)}
+                        onPointerMove={moveImageResize}
+                        onPointerUp={endImageResize}
+                        aria-label="Resize image"
+                      />
                     </>
                   )}
                 </div>
@@ -4146,7 +4631,7 @@ function Board({
           {/* The empty state sits on the viewport, not the canvas
               layer, so it stays centred no matter where the board
               is panned or how far it is zoomed. */}
-          {notes.length === 0 && shapes.length === 0 && texts.length === 0 && frames.length === 0 && (
+          {notes.length === 0 && shapes.length === 0 && texts.length === 0 && images.length === 0 && frames.length === 0 && (
             <div className="board-empty">
               {status === "connected" ? (
                 <>
@@ -4234,7 +4719,9 @@ function Board({
                         ? { border: `1px solid ${SHAPE_STROKE_COLORS[item.color]}` }
                         : item.kind === "note"
                           ? { background: NOTE_COLORS[item.color] }
-                          : { background: SHAPE_STROKE_COLORS[item.color] }),
+                          : item.kind === "image"
+                            ? { background: "#94a3b8" }
+                            : { background: SHAPE_STROKE_COLORS[item.color] }),
                     }}
                   />
                 );
