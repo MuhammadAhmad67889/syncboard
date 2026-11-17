@@ -6,12 +6,14 @@ import {
   createImage,
   createShape,
   createTextBox,
+  createVoiceNote,
   type Connector,
   type Frame,
   type ImageItem,
   type Note,
   type Shape,
   type TextBox,
+  type VoiceNote,
 } from "@syncboard/shared";
 import {
   applyBoardExport,
@@ -54,6 +56,9 @@ function sampleBoard(): BoardExport {
   const images: ImageItem[] = [
     createImage("i1", 900, 120, 200, 200, RED_PIXEL),
   ];
+  const voiceNotes: VoiceNote[] = [
+    createVoiceNote("v1", 900, 400, "data:audio/webm;base64,AAAA", 12),
+  ];
   return {
     version: 1,
     exportedAt: "2026-11-12T00:00:00.000Z",
@@ -64,6 +69,7 @@ function sampleBoard(): BoardExport {
     frames,
     connectors,
     images,
+    voiceNotes,
   };
 }
 
@@ -176,6 +182,38 @@ describe("exportDocToBoard / applyBoardExport", () => {
     expect(parsed!.images).toEqual([]);
   });
 
+  it("imports an old export without voice notes", () => {
+    // Exports made before voice notes existed have no such
+    // list. They must still import — with no voice notes —
+    // instead of being rejected.
+    const old = {
+      version: 1,
+      exportedAt: "2026-11-12T00:00:00.000Z",
+      boardId: "syncboard-demo",
+      notes: [],
+      shapes: [],
+      texts: [],
+      frames: [],
+      connectors: [],
+      images: [],
+    };
+    const parsed = parseBoardExport(JSON.stringify(old));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.voiceNotes).toEqual([]);
+  });
+
+  it("drops a voice note with no audio", () => {
+    const board = {
+      ...sampleBoard(),
+      voiceNotes: [
+        { id: "bad", x: 0, y: 0, dataUrl: "data:image/png;base64,AAAA", durationSeconds: 5 },
+      ],
+    };
+    const parsed = parseBoardExport(JSON.stringify(board));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.voiceNotes).toEqual([]);
+  });
+
   it("replaces the board instead of merging with it", () => {
     const doc = new Y.Doc();
     applyBoardExport(doc, sampleBoard(), ORIGIN);
@@ -190,6 +228,7 @@ describe("exportDocToBoard / applyBoardExport", () => {
       frames: [],
       connectors: [],
       images: [],
+      voiceNotes: [],
     };
     applyBoardExport(doc, smaller, ORIGIN);
     const restored = exportDocToBoard(doc, "syncboard-demo");
@@ -199,6 +238,14 @@ describe("exportDocToBoard / applyBoardExport", () => {
     expect(restored.frames).toEqual([]);
     expect(restored.connectors).toEqual([]);
     expect(restored.images).toEqual([]);
+    expect(restored.voiceNotes).toEqual([]);
+  });
+
+  it("keeps voice notes through the round-trip", () => {
+    const doc = new Y.Doc();
+    applyBoardExport(doc, sampleBoard(), ORIGIN);
+    const restored = exportDocToBoard(doc, "syncboard-demo");
+    expect(restored.voiceNotes).toEqual(sampleBoard().voiceNotes);
   });
 
   it("keeps pen points through the round-trip", () => {

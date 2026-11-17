@@ -224,7 +224,7 @@ describe("snapshots", () => {
       boardId: board.id,
       name: "Before redesign",
       createdAt: expect.any(String),
-      counts: { notes: 2, shapes: 0, texts: 0, frames: 0, connectors: 0, images: 0 },
+      counts: { notes: 2, shapes: 0, texts: 0, frames: 0, connectors: 0, images: 0, voiceNotes: 0 },
     });
     const listed = store.listSnapshots(board.id);
     expect(listed).toHaveLength(1);
