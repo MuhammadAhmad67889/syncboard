@@ -236,6 +236,38 @@ export function createTextBox(
   return { id, x, y, w, h, fontSize, color, text };
 }
 
+// One voice note on the board: a short recording pinned to a
+// spot. Position is in board pixels, like other items — but a
+// voice note has a fixed size (VOICE_NOTE_SIZE), so it stores
+// no w/h. dataUrl is the recording itself (webm/opus when the
+// browser offers it), and durationSeconds is how long it plays,
+// so the pin can show it without loading the audio. The data
+// URL's prefix (data:audio/webm;base64,...) says what format
+// it is.
+export interface VoiceNote {
+  id: string;
+  x: number;
+  y: number;
+  dataUrl: string;
+  durationSeconds: number;
+}
+
+// The size of a voice-note pin on the board. Fixed: a pin is a
+// play button with a duration, not a resizable box.
+export const VOICE_NOTE_SIZE = { w: 72, h: 72 } as const;
+
+// Builds a voice note. The caller passes the recorded data URL
+// and the duration it measured while recording.
+export function createVoiceNote(
+  id: string,
+  x: number,
+  y: number,
+  dataUrl: string,
+  durationSeconds: number,
+): VoiceNote {
+  return { id, x, y, dataUrl, durationSeconds };
+}
+
 // One image on the board: a picture placed by a user, shown at
 // its stored size. Position and size are in board pixels, like a
 // shape. dataUrl is the image itself, downscaled before storing
@@ -558,6 +590,7 @@ export interface SnapshotCounts {
   frames: number;
   connectors: number;
   images: number;
+  voiceNotes: number;
 }
 
 export interface BoardSnapshotMeta {
