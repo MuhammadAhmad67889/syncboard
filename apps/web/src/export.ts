@@ -12,21 +12,23 @@ import {
   type NoteColor,
   type Shape,
   type TextBox,
+  type VoiceNote,
 } from "@syncboard/shared";
 import { buildShapeMap, readShape, SHAPE_STROKE_COLORS } from "./shapes";
 import { buildTextMap, readTextBox, TEXT_COLORS } from "./texts";
 import { buildFrameMap, readFrame } from "./frames";
 import { buildConnectorMap, readConnector } from "./connectors";
 import { buildImageMap, readImage } from "./images";
+import { buildVoiceNoteMap, readVoiceNote } from "./voiceNotes";
 
 // ---------------------------------------------------------------------------
 // JSON export / import
 // ---------------------------------------------------------------------------
 
 // The whole board as a plain JSON object: every note, shape,
-// text box, frame, connector, and image with all of its fields.
-// version lets a future format change be detected instead of
-// silently misread.
+// text box, frame, connector, image, and voice note with all
+// of its fields. version lets a future format change be
+// detected instead of silently misread.
 export interface BoardExport {
   version: 1;
   exportedAt: string;
@@ -37,6 +39,7 @@ export interface BoardExport {
   frames: Frame[];
   connectors: Connector[];
   images: ImageItem[];
+  voiceNotes: VoiceNote[];
 }
 
 // Serializes a board to a JSON string, ready to download.
@@ -147,6 +150,21 @@ function parseImage(value: unknown): ImageItem | null {
   };
 }
 
+function parseVoiceNote(value: unknown): VoiceNote | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  const dataUrl = asString(value.dataUrl);
+  // A note with no audio is not a voice note — a bad entry is
+  // dropped, not imported as a silent pin.
+  if (!dataUrl.startsWith("data:audio/")) return null;
+  return {
+    id: value.id,
+    x: asNumber(value.x, 0),
+    y: asNumber(value.y, 0),
+    dataUrl,
+    durationSeconds: Math.max(0, asNumber(value.durationSeconds, 0)),
+  };
+}
+
 // Parses an imported JSON string into a board. Returns null when
 // the file is not a SyncBoard export at all (bad JSON, wrong
 // version, missing lists) — the caller shows an error instead of
@@ -205,6 +223,16 @@ export function parseBoardExport(json: string): BoardExport | null {
       if (image) images.push(image);
     }
   }
+  // Voice notes are optional in the file, like images: exports
+  // made before they existed have no such list, and those files
+  // must still import.
+  const voiceNotes: VoiceNote[] = [];
+  if (Array.isArray(parsed.voiceNotes)) {
+    for (const entry of parsed.voiceNotes) {
+      const voiceNote = parseVoiceNote(entry);
+      if (voiceNote) voiceNotes.push(voiceNote);
+    }
+  }
   return {
     version: 1,
     exportedAt: asString(parsed.exportedAt, new Date().toISOString()),
@@ -215,6 +243,7 @@ export function parseBoardExport(json: string): BoardExport | null {
     frames,
     connectors,
     images,
+    voiceNotes,
   };
 }
 
@@ -243,12 +272,14 @@ export function applyBoardExport(doc: Y.Doc, data: BoardExport, origin: unknown)
     const framesMap = doc.getMap<Y.Map<unknown>>("frames");
     const connectorsMap = doc.getMap<Y.Map<unknown>>("connectors");
     const imagesMap = doc.getMap<Y.Map<unknown>>("images");
+    const voiceNotesMap = doc.getMap<Y.Map<unknown>>("voiceNotes");
     notesMap.clear();
     shapesMap.clear();
     textsMap.clear();
     framesMap.clear();
     connectorsMap.clear();
     imagesMap.clear();
+    voiceNotesMap.clear();
     for (const note of data.notes) {
       notesMap.set(note.id, buildNoteMap(note));
     }
@@ -266,6 +297,9 @@ export function applyBoardExport(doc: Y.Doc, data: BoardExport, origin: unknown)
     }
     for (const image of data.images) {
       imagesMap.set(image.id, buildImageMap(image));
+    }
+    for (const voiceNote of data.voiceNotes) {
+      voiceNotesMap.set(voiceNote.id, buildVoiceNoteMap(voiceNote));
     }
   }, origin);
 }
@@ -310,6 +344,12 @@ export function exportDocToBoard(doc: Y.Doc, boardId: string): BoardExport {
     // An image with no picture is not an image.
     if (image.dataUrl) images.push(image);
   });
+  const voiceNotes: VoiceNote[] = [];
+  doc.getMap<Y.Map<unknown>>("voiceNotes").forEach((voiceMap, id) => {
+    const voiceNote = readVoiceNote(id, voiceMap);
+    // A note with no audio is not a voice note.
+    if (voiceNote.dataUrl) voiceNotes.push(voiceNote);
+  });
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -320,6 +360,7 @@ export function exportDocToBoard(doc: Y.Doc, boardId: string): BoardExport {
     frames,
     connectors,
     images,
+    voiceNotes,
   };
 }
 

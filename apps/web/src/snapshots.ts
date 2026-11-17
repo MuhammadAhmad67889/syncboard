@@ -49,7 +49,8 @@ function isSnapshotCounts(value: unknown): value is SnapshotCounts {
     typeof counts.texts === "number" &&
     typeof counts.frames === "number" &&
     typeof counts.connectors === "number" &&
-    typeof counts.images === "number"
+    typeof counts.images === "number" &&
+    typeof counts.voiceNotes === "number"
   );
 }
 
@@ -168,6 +169,7 @@ export function snapshotCountsLabel(counts: SnapshotCounts): string {
   add(counts.frames, "frame", "frames");
   add(counts.connectors, "connector", "connectors");
   add(counts.images, "image", "images");
+  add(counts.voiceNotes, "voice note", "voice notes");
   return parts.length === 0 ? "Empty board" : parts.join(" · ");
 }
 

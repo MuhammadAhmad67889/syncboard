@@ -32,6 +32,7 @@ import {
   shapeBoxFromPoints,
   sortCommentsNewestFirst,
   votesInSession,
+  VOICE_NOTE_SIZE,
   type BoardMeta,
   type Box,
   type Comment,
@@ -47,6 +48,7 @@ import {
   type ShapePoint,
   type TextBox,
   type TextFontSize,
+  type VoiceNote,
   type Vote,
   type VotingSession,
 } from "@syncboard/shared";
@@ -86,6 +88,16 @@ import {
   readImage,
   type ImageMap,
 } from "./images";
+import {
+  blobToDataUrl,
+  buildVoiceNote,
+  buildVoiceNoteMap,
+  formatDuration,
+  isVoiceNoteOversize,
+  readVoiceNote,
+  VoiceRecorder,
+  type VoiceMap,
+} from "./voiceNotes";
 import {
   buildCommentMap,
   formatCommentTime,
@@ -170,14 +182,15 @@ type NoteMap = Y.Map<unknown>;
 // draws a named section the same way; Connector joins two items
 // with an arrow; Comment pins a comment thread to the canvas.
 // Vote places a dot on an item while a voting session is open.
-type Tool = "select" | "note" | "text" | "frame" | "connector" | "comment" | "vote" | ShapeKind;
+// Voice drops a voice-note pin and starts recording.
+type Tool = "select" | "note" | "text" | "frame" | "connector" | "comment" | "vote" | "voice" | ShapeKind;
 
 // One item a frame drag carries along: what it is, which one, and
 // where it started. Pen shapes also carry their points, because a
 // pen stroke lives in absolute board pixels — moving x/y alone
 // would leave the stroke behind.
 type FrameDragContent = {
-  kind: "note" | "shape" | "text" | "frame" | "image";
+  kind: "note" | "shape" | "text" | "frame" | "image" | "voice";
   id: string;
   x: number;
   y: number;
@@ -269,6 +282,15 @@ const TOOL_ICONS: Record<Tool, React.ReactNode> = {
   vote: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       <circle cx="8" cy="8" r="5" />
+    </svg>
+  ),
+  // A voice note is a microphone: a capsule with a stand, like
+  // the pin a recording leaves on the board.
+  voice: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="6" y="2" width="4" height="7" rx="2" />
+      <path d="M4 7.5 a4 4 0 0 0 8 0" />
+      <path d="M8 11.5 v2.5 M5.5 14 h5" />
     </svg>
   ),
 };
@@ -863,6 +885,9 @@ function Board({
   // The images on the board, from the shared "images" map —
   // pictures placed by a user, stored downscaled as data URLs.
   const [images, setImages] = useState<ImageItem[]>([]);
+  // The voice notes on the board, from the shared "voiceNotes"
+  // map — short recordings pinned to a spot, stored as data URLs.
+  const [voiceNotes, setVoiceNotes] = useState<VoiceNote[]>([]);
   // The frames on the board, from the shared "frames" map —
   // named sections that hold other items.
   const [frames, setFrames] = useState<Frame[]>([]);
@@ -963,6 +988,20 @@ function Board({
   // Awareness (like frames and connectors), so their selection
   // is local only — other users do not see it.
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  // The voice note this user clicked. Voice notes are not
+  // published to Awareness either, so their selection is local
+  // only too.
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
+  // The recording in progress, if any: where its pin sits on
+  // the board. The pin is local until the recording stops — only
+  // a finished clip is written to the shared document.
+  const [recordingDraft, setRecordingDraft] = useState<{ x: number; y: number } | null>(null);
+  // The seconds the current recording has run, for the pin's
+  // timer. Reset when a recording starts or ends.
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
+  // The voice note playing right now, if any. Only one plays
+  // at a time — starting another pauses this one.
+  const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   // The first item of a connector being drawn: the user picked
   // this item with the Connector tool and is about to pick the
   // second one. Null when no connector is in progress.
@@ -1007,6 +1046,7 @@ function Board({
   const shapesMapRef = useRef<Y.Map<ShapeMap> | null>(null);
   const textsMapRef = useRef<Y.Map<TextMap> | null>(null);
   const imagesMapRef = useRef<Y.Map<ImageMap> | null>(null);
+  const voiceNotesMapRef = useRef<Y.Map<VoiceMap> | null>(null);
   const framesMapRef = useRef<Y.Map<FrameMap> | null>(null);
   const connectorsMapRef = useRef<Y.Map<ConnectorMap> | null>(null);
   const commentsMapRef = useRef<Y.Map<CommentMap> | null>(null);
@@ -1022,6 +1062,16 @@ function Board({
   // The selected image, mirrored in a ref for the same reason:
   // images are not published to Awareness either.
   const selectedImageRef = useRef<string | null>(null);
+  // The selected voice note, mirrored in a ref for the same
+  // reason: voice notes are not published to Awareness either.
+  const selectedVoiceRef = useRef<string | null>(null);
+  // The recorder for the recording in progress, if any. Held in
+  // a ref so the stop and cancel buttons can reach it without
+  // re-rendering the board every second.
+  const voiceRecorderRef = useRef<VoiceRecorder | null>(null);
+  // The audio element of each voice note, by note id — so
+  // playing one note can pause the one already playing.
+  const audioRefs = useRef(new Map<string, HTMLAudioElement>());
   // The hidden file input for Import JSON — the header button
   // opens it, and the change handler reads the picked file.
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -1197,6 +1247,17 @@ function Board({
     imageX: number;
     imageY: number;
   } | null>(null);
+  // The voice-note drag in progress, if any — same shape as an
+  // image drag. A voice note is a fixed-size pin, so there is
+  // no resize to track.
+  const voiceDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    voiceX: number;
+    voiceY: number;
+  } | null>(null);
   // The image resize in progress, if any. The aspect is the
   // image's width over height at the start, so the resize keeps
   // the picture's shape instead of stretching it.
@@ -1321,6 +1382,8 @@ function Board({
     textsMapRef.current = textsMap;
     const imagesMap = doc.getMap<ImageMap>("images");
     imagesMapRef.current = imagesMap;
+    const voiceNotesMap = doc.getMap<VoiceMap>("voiceNotes");
+    voiceNotesMapRef.current = voiceNotesMap;
     const framesMap = doc.getMap<FrameMap>("frames");
     framesMapRef.current = framesMap;
     const connectorsMap = doc.getMap<ConnectorMap>("connectors");
@@ -1336,15 +1399,15 @@ function Board({
 
     // Per-user undo: the manager only tracks transactions stamped
     // with our own origin, so another user's edits never land on
-    // our undo stack. It watches all eight shared roots — notes,
-    // shapes, text boxes, images, frames, connectors, comments,
-    // and votes — so one undo stack covers all of them. The
-    // "voting" map is not watched: starting or ending a session
-    // is never an undo step, while placing a dot and clearing
-    // votes are. Drags and typing batch into one step while they
-    // keep coming within the capture timeout (500 ms).
+    // our undo stack. It watches all nine shared roots — notes,
+    // shapes, text boxes, images, voice notes, frames,
+    // connectors, comments, and votes — so one undo stack covers
+    // all of them. The "voting" map is not watched: starting or
+    // ending a session is never an undo step, while placing a dot
+    // and clearing votes are. Drags and typing batch into one step
+    // while they keep coming within the capture timeout (500 ms).
     const undoManager = new Y.UndoManager(
-      [notesMap, shapesMap, textsMap, imagesMap, framesMap, connectorsMap, commentsMap, votesMap],
+      [notesMap, shapesMap, textsMap, imagesMap, voiceNotesMap, framesMap, connectorsMap, commentsMap, votesMap],
       {
         trackedOrigins: new Set([localOrigin]),
       },
@@ -1410,6 +1473,22 @@ function Board({
 
     imagesMap.observeDeep(snapshotImages);
     snapshotImages();
+
+    // Re-reads every voice note from the shared document into
+    // React state. observeDeep fires for voice-note moves and
+    // deletions alike.
+    function snapshotVoiceNotes(): void {
+      const next: VoiceNote[] = [];
+      voiceNotesMap.forEach((voiceMap, id) => {
+        const voiceNote = readVoiceNote(id, voiceMap);
+        // A note with no audio is not a voice note.
+        if (voiceNote.dataUrl) next.push(voiceNote);
+      });
+      setVoiceNotes(next);
+    }
+
+    voiceNotesMap.observeDeep(snapshotVoiceNotes);
+    snapshotVoiceNotes();
 
     // Re-reads every frame from the shared document into React
     // state. observeDeep fires for frame moves, resizes, color
@@ -1510,6 +1589,7 @@ function Board({
       shapesMap.unobserveDeep(snapshotShapes);
       textsMap.unobserveDeep(snapshotTexts);
       imagesMap.unobserveDeep(snapshotImages);
+      voiceNotesMap.unobserveDeep(snapshotVoiceNotes);
       framesMap.unobserveDeep(snapshotFrames);
       connectorsMap.unobserveDeep(snapshotConnectors);
       commentsMap.unobserveDeep(snapshotComments);
@@ -1522,6 +1602,7 @@ function Board({
       shapesMapRef.current = null;
       textsMapRef.current = null;
       imagesMapRef.current = null;
+      voiceNotesMapRef.current = null;
       framesMapRef.current = null;
       connectorsMapRef.current = null;
       commentsMapRef.current = null;
@@ -1664,6 +1745,14 @@ function Board({
     } else if (tool === "vote") {
       // Clicking empty canvas with the Vote tool does nothing:
       // a dot needs an item to sit on.
+    } else if (tool === "voice") {
+      // Clicking empty canvas with the Voice tool drops a pin
+      // and starts recording right away.
+      const point = toBoardCoords(event.clientX, event.clientY);
+      void startVoiceRecording(
+        Math.max(0, Math.round(point.x)),
+        Math.max(0, Math.round(point.y)),
+      );
     } else if (tool === "note") {
       // Clicking empty canvas with the Note tool drops a
       // note centered on the click.
@@ -2032,6 +2121,7 @@ function Board({
     frameId: string | null = null,
     connectorId: string | null = null,
     imageId: string | null = null,
+    voiceId: string | null = null,
   ): void {
     setSelectedNoteId(noteId);
     setSelectedShapeId(shapeId);
@@ -2039,9 +2129,11 @@ function Board({
     setSelectedFrameId(frameId);
     setSelectedConnectorId(connectorId);
     setSelectedImageId(imageId);
+    setSelectedVoiceId(voiceId);
     selectedFrameRef.current = frameId;
     selectedConnectorRef.current = connectorId;
     selectedImageRef.current = imageId;
+    selectedVoiceRef.current = voiceId;
     localPresenceRef.current.selectedNoteIds = noteId ? [noteId] : [];
     localPresenceRef.current.selectedShapeIds = shapeId ? [shapeId] : [];
     localPresenceRef.current.selectedTextIds = textId ? [textId] : [];
@@ -2764,6 +2856,183 @@ function Board({
     }
   }
 
+  // Clicking a voice note selects it, and tells everyone else
+  // — through the same selection the other items use.
+  function selectVoiceNote(voiceId: string): void {
+    if (selectedVoiceId === voiceId) return;
+    setSelection(null, null, null, null, null, null, voiceId);
+  }
+
+  // Starts a voice-note recording at a board point. The pin is
+  // local until the recording stops: only a finished clip is
+  // written to the shared document, so a cancelled recording
+  // leaves nothing behind. A denied microphone clears the pin
+  // and shows a message instead.
+  async function startVoiceRecording(x: number, y: number): Promise<void> {
+    const recorder = new VoiceRecorder(
+      {
+        getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
+        MediaRecorderCtor: window.MediaRecorder,
+      },
+      {
+        onElapsed: (seconds) => setRecordingElapsed(seconds),
+        onStop: (blob, durationSeconds) =>
+          void saveVoiceRecording(x, y, blob, durationSeconds),
+        onError: (message) => {
+          voiceRecorderRef.current = null;
+          setRecordingDraft(null);
+          setRecordingElapsed(0);
+          setTool("select");
+          setImportMessage(message);
+        },
+      },
+    );
+    voiceRecorderRef.current = recorder;
+    setRecordingDraft({ x, y });
+    setRecordingElapsed(0);
+    setTool("select");
+    await recorder.start();
+    // The user may have cancelled while the microphone prompt
+    // was up — stop a recording nobody is waiting for.
+    if (voiceRecorderRef.current !== recorder) {
+      recorder.cancel();
+    }
+  }
+
+  // Saves a finished recording as a voice note on the board, so
+  // it syncs to everyone. A clip over the cap is rejected with
+  // a message instead of landing on the board.
+  async function saveVoiceRecording(
+    x: number,
+    y: number,
+    blob: Blob,
+    durationSeconds: number,
+  ): Promise<void> {
+    voiceRecorderRef.current = null;
+    setRecordingDraft(null);
+    setRecordingElapsed(0);
+    if (isVoiceNoteOversize(blob.size)) {
+      setImportMessage("That recording is over 2 MB — nothing was saved.");
+      return;
+    }
+    let dataUrl: string;
+    try {
+      dataUrl = await blobToDataUrl(blob);
+    } catch {
+      setImportMessage("Could not save that recording — nothing was added.");
+      return;
+    }
+    const doc = docRef.current;
+    const voiceNotesMap = voiceNotesMapRef.current;
+    if (!doc || !voiceNotesMap) return;
+    const id = crypto.randomUUID();
+    const note = buildVoiceNote(
+      id,
+      Math.max(0, Math.round(x)),
+      Math.max(0, Math.round(y)),
+      dataUrl,
+      durationSeconds,
+    );
+    doc.transact(() => {
+      voiceNotesMap.set(id, buildVoiceNoteMap(note));
+    }, localOrigin);
+    setSelection(null, null, null, null, null, null, id);
+    setImportMessage(null);
+  }
+
+  // Stops the recording in progress. The recorder's onStop
+  // saves the clip — this only ends it.
+  function stopRecording(): void {
+    voiceRecorderRef.current?.stop();
+  }
+
+  // Throws the recording in progress away: no clip, no error,
+  // and the pin goes with it.
+  function cancelRecording(): void {
+    const recorder = voiceRecorderRef.current;
+    voiceRecorderRef.current = null;
+    recorder?.cancel();
+    setRecordingDraft(null);
+    setRecordingElapsed(0);
+    setTool("select");
+  }
+
+  // Removes a voice note from the shared map, so it disappears
+  // in every tab. If it was the selected note, the selection
+  // clears too. A note that was playing is paused first, so the
+  // playing state never points at a note that is gone.
+  function deleteVoiceNote(voiceId: string): void {
+    audioRefs.current.get(voiceId)?.pause();
+    const doc = docRef.current;
+    const voiceNotesMap = voiceNotesMapRef.current;
+    if (!doc || !voiceNotesMap || !voiceNotesMap.has(voiceId)) return;
+    doc.transact(() => {
+      voiceNotesMap.delete(voiceId);
+    }, localOrigin);
+    if (selectedVoiceRef.current === voiceId) {
+      setSelection(null, null);
+    }
+  }
+
+  // Plays a voice note, or pauses it when it is already
+  // playing. Only one note plays at a time — starting another
+  // pauses the one already playing. The audio element's own
+  // play and pause events keep the playing state honest.
+  function toggleVoicePlayback(note: VoiceNote): void {
+    const audio = audioRefs.current.get(note.id);
+    if (!audio) return;
+    if (playingVoiceId === note.id) {
+      audio.pause();
+      return;
+    }
+    const playing = playingVoiceId ? audioRefs.current.get(playingVoiceId) : undefined;
+    playing?.pause();
+    void audio.play().catch(() => undefined);
+  }
+
+  // Starts a drag from a voice note. The whole pin is the
+  // handle — there is no text to edit, so the entire pin grabs.
+  // With the Connector or Vote tool, a press does nothing
+  // instead: voice notes are neither endpoints nor vote targets.
+  function startVoiceDrag(event: React.PointerEvent<HTMLDivElement>, note: VoiceNote): void {
+    if (event.button !== 0 || tool === "connector" || tool === "vote" || pinchRef.current) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    voiceDragRef.current = {
+      id: note.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      voiceX: note.x,
+      voiceY: note.y,
+    };
+  }
+
+  function moveVoiceDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    const drag = voiceDragRef.current;
+    const doc = docRef.current;
+    const voiceNotesMap = voiceNotesMapRef.current;
+    if (!drag || !doc || !voiceNotesMap || event.pointerId !== drag.pointerId) return;
+    const voiceMap = voiceNotesMap.get(drag.id);
+    if (!voiceMap) return;
+    // Screen pixels become board pixels by dividing by the zoom —
+    // at 200% a 20px mouse move is only 10 board pixels.
+    const nextX = Math.max(0, drag.voiceX + (event.clientX - drag.startX) / zoom);
+    const nextY = Math.max(0, drag.voiceY + (event.clientY - drag.startY) / zoom);
+    // Same batching as a note drag: the whole drag lands on one
+    // undo step.
+    doc.transact(() => {
+      voiceMap.set("x", Math.round(nextX));
+      voiceMap.set("y", Math.round(nextY));
+    }, localOrigin);
+  }
+
+  function endVoiceDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (voiceDragRef.current?.pointerId === event.pointerId) {
+      voiceDragRef.current = null;
+      undoManagerRef.current?.stopCapturing();
+    }
+  }
+
   // Starts a drag from an image. The whole image is the handle —
   // there is no text to edit, so the entire image grabs. With
   // the Connector or Vote tool, a press does nothing instead:
@@ -2952,6 +3221,21 @@ function Board({
         contents.push({ kind: "image", id: image.id, x: image.x, y: image.y });
       }
     }
+    for (const voiceNote of voiceNotes) {
+      // A voice note is a fixed-size pin: its box is its
+      // position plus the pin size, so its centre is what the
+      // frame test reads.
+      if (
+        boxCentreInFrame(frame, {
+          x: voiceNote.x,
+          y: voiceNote.y,
+          w: VOICE_NOTE_SIZE.w,
+          h: VOICE_NOTE_SIZE.h,
+        })
+      ) {
+        contents.push({ kind: "voice", id: voiceNote.id, x: voiceNote.x, y: voiceNote.y });
+      }
+    }
     for (const other of frames) {
       if (other.id !== frame.id && boxCentreInFrame(frame, other)) {
         contents.push({ kind: "frame", id: other.id, x: other.x, y: other.y });
@@ -2987,8 +3271,9 @@ function Board({
     const shapesMap = shapesMapRef.current;
     const textsMap = textsMapRef.current;
     const imagesMap = imagesMapRef.current;
+    const voiceNotesMap = voiceNotesMapRef.current;
     const framesMap = framesMapRef.current;
-    if (!notesMap || !shapesMap || !textsMap || !imagesMap || !framesMap) return;
+    if (!notesMap || !shapesMap || !textsMap || !imagesMap || !voiceNotesMap || !framesMap) return;
     const frameMap = framesMap.get(drag.id);
     if (!frameMap) return;
     // Screen pixels become board pixels by dividing by the zoom —
@@ -3035,6 +3320,9 @@ function Board({
         } else if (item.kind === "image") {
           imagesMap.get(item.id)?.set("x", Math.round(item.x + moveX));
           imagesMap.get(item.id)?.set("y", Math.round(item.y + moveY));
+        } else if (item.kind === "voice") {
+          voiceNotesMap.get(item.id)?.set("x", Math.round(item.x + moveX));
+          voiceNotesMap.get(item.id)?.set("y", Math.round(item.y + moveY));
         } else {
           framesMap.get(item.id)?.set("x", Math.round(item.x + moveX));
           framesMap.get(item.id)?.set("y", Math.round(item.y + moveY));
@@ -3373,8 +3661,8 @@ function Board({
   }
 
   // Downloads the whole board — notes, shapes, text boxes,
-  // frames, connectors, and images — as a JSON file, so it can
-  // be saved or moved to another board.
+  // frames, connectors, images, and voice notes — as a JSON
+  // file, so it can be saved or moved to another board.
   function exportJson(): void {
     const data: BoardExport = {
       version: 1,
@@ -3386,6 +3674,7 @@ function Board({
       frames,
       connectors,
       images,
+      voiceNotes,
     };
     downloadBlob(
       `syncboard-${boardId}.json`,
@@ -3414,8 +3703,8 @@ function Board({
       !window.confirm(
         `Replace this board with "${file.name}"? It has ${parsed.notes.length} notes, ` +
           `${parsed.shapes.length} shapes, ${parsed.texts.length} text boxes, ` +
-          `${parsed.frames.length} frames, ${parsed.connectors.length} connectors, and ` +
-          `${parsed.images.length} images. ` +
+          `${parsed.frames.length} frames, ${parsed.connectors.length} connectors, ` +
+          `${parsed.images.length} images, and ${parsed.voiceNotes.length} voice notes. ` +
           `Everything on this board now will be gone — press Ctrl+Z to undo the import.`,
       )
     ) {
@@ -3428,8 +3717,8 @@ function Board({
     setImportMessage(
       `Imported ${parsed.notes.length} notes, ${parsed.shapes.length} shapes, ` +
         `${parsed.texts.length} text boxes, ${parsed.frames.length} frames, ` +
-        `${parsed.connectors.length} connectors, and ${parsed.images.length} images ` +
-        `from "${file.name}".`,
+        `${parsed.connectors.length} connectors, ${parsed.images.length} images, and ` +
+        `${parsed.voiceNotes.length} voice notes from "${file.name}".`,
     );
   }
 
@@ -3585,9 +3874,10 @@ function Board({
 
   // Keyboard shortcuts: Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo,
   // Delete / Backspace deletes the selected note, shape, text
-  // box, frame, connector, or image, Escape returns to the Select
-  // tool and cancels a connector in progress. Delete only fires
-  // when the user is not typing in a note's textarea.
+  // box, frame, connector, image, or voice note, Escape returns
+  // to the Select tool and cancels a connector in progress.
+  // Delete only fires when the user is not typing in a note's
+  // textarea.
   // Ctrl+Z is caught even while typing: the textarea is controlled
   // by the shared document, so the browser's native text undo
   // would fight React — the UndoManager is the one that works.
@@ -3624,6 +3914,7 @@ function Board({
         setConnectorPendingFromId(null);
         setCommentDraft(null);
         setCommentText("");
+        cancelRecording();
         return;
       }
       if (mod && !event.shiftKey && key === "z") {
@@ -3643,6 +3934,7 @@ function Board({
         const selectedFrame = selectedFrameRef.current;
         const selectedConnector = selectedConnectorRef.current;
         const selectedImage = selectedImageRef.current;
+        const selectedVoice = selectedVoiceRef.current;
         if (selectedNote) {
           event.preventDefault();
           deleteNote(selectedNote);
@@ -3661,6 +3953,9 @@ function Board({
         } else if (selectedImage) {
           event.preventDefault();
           deleteImage(selectedImage);
+        } else if (selectedVoice) {
+          event.preventDefault();
+          deleteVoiceNote(selectedVoice);
         }
       }
     }
@@ -3833,6 +4128,17 @@ function Board({
     // Images have no color — the minimap draws them grey, so the
     // color here is a placeholder the image branch never reads.
     ...images.map((image) => ({ ...image, color: "yellow" as NoteColor, kind: "image" })),
+    // Voice notes are fixed-size pins: their box is their
+    // position plus the pin size, like the frame test reads them.
+    ...voiceNotes.map((voiceNote) => ({
+      x: voiceNote.x,
+      y: voiceNote.y,
+      w: VOICE_NOTE_SIZE.w,
+      h: VOICE_NOTE_SIZE.h,
+      id: voiceNote.id,
+      color: "yellow" as NoteColor,
+      kind: "voice",
+    })),
   ];
   const minimapGeometryValue = minimapGeometry();
   const minimapViewportRect = viewportRect(
@@ -4324,6 +4630,17 @@ function Board({
           >
             {ACTION_ICONS.upload}
             <span className="tool-label">Image</span>
+          </button>
+          <button
+            type="button"
+            className={`toolbar-button tool-button${tool === "voice" ? " active" : ""}`}
+            onClick={() => setTool(tool === "voice" ? "select" : "voice")}
+            aria-pressed={tool === "voice"}
+            aria-label="Voice note"
+            title="Click empty canvas to drop a voice note and record"
+          >
+            {TOOL_ICONS.voice}
+            <span className="tool-label">Voice</span>
           </button>
           <span className="toolbar-divider" aria-hidden="true" />
           <div className="tool-picker" role="group" aria-label="Drawing tools">
@@ -4823,6 +5140,115 @@ function Board({
                 </div>
               );
             })}
+            {voiceNotes.map((note) => {
+              const isSelected = selectedVoiceId === note.id;
+              const isPlaying = playingVoiceId === note.id;
+              return (
+                <div
+                  key={note.id}
+                  className="voice-note"
+                  data-voice-id={note.id}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    // Voice notes are neither connector endpoints
+                    // nor vote targets, so those tools do nothing
+                    // here. A creation tool does nothing either —
+                    // the press never reaches the board, so no
+                    // note or shape is created under the pin.
+                    if (tool !== "select") return;
+                    selectVoiceNote(note.id);
+                    startVoiceDrag(event, note);
+                  }}
+                  onPointerMove={moveVoiceDrag}
+                  onPointerUp={endVoiceDrag}
+                  style={{
+                    left: note.x,
+                    top: note.y,
+                    // A selected voice note gets an accent outline,
+                    // like a selected image.
+                    ...(isSelected
+                      ? { boxShadow: "0 0 0 2px var(--color-accent)" }
+                      : undefined),
+                  }}
+                >
+                  <audio
+                    ref={(element) => {
+                      if (element) audioRefs.current.set(note.id, element);
+                      else audioRefs.current.delete(note.id);
+                    }}
+                    src={note.dataUrl}
+                    preload="none"
+                    onPlay={() => setPlayingVoiceId(note.id)}
+                    onPause={() =>
+                      setPlayingVoiceId((current) => (current === note.id ? null : current))
+                    }
+                    onEnded={() =>
+                      setPlayingVoiceId((current) => (current === note.id ? null : current))
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="voice-play"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleVoicePlayback(note);
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    aria-label={isPlaying ? "Pause voice note" : "Play voice note"}
+                    title={
+                      isPlaying ? "Pause" : `Play voice note (${formatDuration(note.durationSeconds)})`
+                    }
+                  >
+                    {isPlaying ? "⏸" : "▶"}
+                  </button>
+                  <span className="voice-duration" aria-label={`${formatDuration(note.durationSeconds)} long`}>
+                    {formatDuration(note.durationSeconds)}
+                  </span>
+                  {isSelected && (
+                    <button
+                      type="button"
+                      className="note-delete"
+                      onClick={() => deleteVoiceNote(note.id)}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      aria-label="Delete voice note"
+                      title="Delete voice note (Delete key)"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {recordingDraft && (
+              <div
+                className="voice-note recording"
+                role="status"
+                aria-label="Recording voice note"
+                style={{ left: recordingDraft.x, top: recordingDraft.y }}
+              >
+                <span className="voice-rec-dot" aria-hidden="true" />
+                <span className="voice-duration">{formatDuration(recordingElapsed)}</span>
+                <button
+                  type="button"
+                  className="voice-stop"
+                  onClick={stopRecording}
+                  aria-label="Stop recording"
+                  title="Stop recording and save the note"
+                >
+                  Stop
+                </button>
+                <button
+                  type="button"
+                  className="note-delete"
+                  onClick={cancelRecording}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  aria-label="Cancel recording"
+                  title="Cancel recording"
+                >
+                  ×
+                </button>
+              </div>
+            )}
             {notes.map((note) => {
             const selectors = selectorsByNote.get(note.id) ?? [];
             // The outline for a selected note: a selector's color,

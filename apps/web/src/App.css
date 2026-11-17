@@ -1356,6 +1356,98 @@
   border-radius: var(--radius-input);
 }
 
+/* --- Voice notes --- */
+/* A recording pinned to the board: a fixed-size paper pin with a
+   play button and its duration. The pin itself grabs for
+   dragging; the play button stops the press, so playing never
+   starts a drag. The delete button is the same one notes and
+   images use. */
+.voice-note {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--color-paper);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-input);
+  box-shadow: var(--shadow-card);
+  cursor: grab;
+  touch-action: none;
+}
+
+.voice-note:active {
+  cursor: grabbing;
+}
+
+.voice-play {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.voice-duration {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  line-height: 1;
+}
+
+/* A recording in progress: the pin shows a red dot and a
+   running timer, with Stop to save the clip. The dot pulses,
+   unless the user asked for reduced motion. */
+.voice-note.recording {
+  border-color: var(--color-error);
+}
+
+.voice-rec-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-error);
+  animation: voice-rec-pulse 1s ease-in-out infinite;
+}
+
+@keyframes voice-rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-rec-dot {
+    animation: none;
+  }
+}
+
+.voice-stop {
+  padding: var(--space-2xs) var(--space-sm);
+  border: 0;
+  border-radius: var(--radius-input);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* --- Frames --- */
 /* A named section on the board. The fill stays paper — the
    frame's color shows in its border and its title pill — and
