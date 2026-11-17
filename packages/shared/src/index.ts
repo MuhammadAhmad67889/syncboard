@@ -605,6 +605,10 @@ export const SEED_NOTES: Array<{
 // selectedNoteIds lists the notes this user has selected right now,
 // selectedShapeIds lists their selected shapes, and
 // selectedTextIds lists their selected text boxes.
+// presentingFrameId is the frame this user is presenting right
+// now, if any: the id of the slide their viewers should be
+// looking at. Null when they are not presenting — viewers
+// follow the presenter by moving their camera to this frame.
 export interface PresenceUser {
   id: string;
   name: string;
@@ -613,6 +617,7 @@ export interface PresenceUser {
   selectedNoteIds: string[];
   selectedShapeIds: string[];
   selectedTextIds: string[];
+  presentingFrameId?: string | null;
 }
 
 // A signed-in user, as the auth endpoints return them and the
