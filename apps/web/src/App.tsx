@@ -15,6 +15,7 @@ import {
   MIN_TEXT_SIZE,
   NOTE_COLORS,
   TEXT_FONT_SIZES,
+  TIMED_SESSION_DURATIONS_MINUTES,
   boxCentreInFrame,
   canPlaceVote,
   connectorEndpoints,
@@ -26,11 +27,15 @@ import {
   createShape,
   createTextBox,
   createVote,
+  formatSessionCountdown,
+  isTimedSessionRunning,
+  remainingSessionMs,
   normalizeShapeBox,
   penPathFromPoints,
   remainingDots,
   shapeBoxFromPoints,
   sortCommentsNewestFirst,
+  visibleVotes,
   votesInSession,
   VOICE_NOTE_SIZE,
   type BoardMeta,
@@ -908,6 +913,17 @@ function Board({
   // session. Local only until Start voting writes it to the
   // shared session.
   const [dotsPerPersonChoice, setDotsPerPersonChoice] = useState(DEFAULT_DOTS_PER_PERSON);
+  // The length the starter picks for a timed session, in
+  // minutes. Local only until Start timed session writes the
+  // end time to the shared session.
+  const [timedDurationChoice, setTimedDurationChoice] = useState<number>(
+    TIMED_SESSION_DURATIONS_MINUTES[1],
+  );
+  // The clock the timed-session countdown reads: now, in epoch
+  // ms. It only ticks while a timed session runs (see the clock
+  // effect), so the board does not re-render twice a second
+  // the rest of the time.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   // The comment pin waiting for its text: the user clicked the
   // canvas with the Comment tool, and the composer in the panel
   // is open. The pin itself is local only until the comment is
@@ -1540,9 +1556,14 @@ function Board({
 
     // Re-reads the voting session from the shared document
     // into React state. observe fires when a session starts,
-    // ends, or changes its dots per person.
+    // ends, or changes its dots per person. When a timed
+    // session arrives or changes, the clock refreshes at once —
+    // so the countdown never shows a stale time while waiting
+    // for the next tick, including for a late joiner.
     function snapshotVoting(): void {
-      setVotingSession(readVotingSession(votingMap));
+      const next = readVotingSession(votingMap);
+      setVotingSession(next);
+      if (next?.timed && next.active) setNowMs(Date.now());
     }
 
     votingMap.observe(snapshotVoting);
@@ -3528,6 +3549,35 @@ function Board({
         startedBy: user.id,
         startedByName: user.name,
         session: (votingSession?.session ?? 0) + 1,
+        timed: false,
+        endsAt: 0,
+      });
+    }, localOrigin);
+    undoManagerRef.current?.stopCapturing();
+    setTool("vote");
+  }
+
+  // Opens a timed voting session: the same fresh allocation as
+  // an open session, but the dots stay hidden until the clock
+  // runs out. The end time is written into the shared document,
+  // so every client counts down to the same moment, late
+  // joiners see the right remaining time, and the session still
+  // ends on time if the starter leaves. One session at a time —
+  // starting while one is open does nothing.
+  function startTimedSession(): void {
+    const doc = docRef.current;
+    const votingMap = votingMapRef.current;
+    if (!doc || !votingMap || votingSession?.active) return;
+    const endsAt = Date.now() + timedDurationChoice * 60 * 1000;
+    doc.transact(() => {
+      writeVotingSession(votingMap, {
+        active: true,
+        dotsPerPerson: dotsPerPersonChoice,
+        startedBy: user.id,
+        startedByName: user.name,
+        session: (votingSession?.session ?? 0) + 1,
+        timed: true,
+        endsAt,
       });
     }, localOrigin);
     undoManagerRef.current?.stopCapturing();
@@ -4007,6 +4057,30 @@ function Board({
     moveCameraToFrame(frame);
   }, [presence, slides, presentIndex]);
 
+  // The timed-session clock: twice a second, refresh now so
+  // the countdown ticks, and end a timed session whose end
+  // time has passed. The end is written to the shared document,
+  // so every client ends together — and a client that opens the
+  // board after the end time ends it on the spot. The reveal
+  // itself follows the clock (see visibleVotes), not this write,
+  // so the votes show the moment the time runs out even before
+  // the write lands.
+  useEffect(() => {
+    if (!votingSession?.timed || !votingSession.active) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setNowMs(now);
+      if (now >= votingSession.endsAt) {
+        endVoting();
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+    // endVoting only writes the current session closed. It
+    // changes identity every render, and re-running the effect
+    // for that would restart the clock.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [votingSession]);
+
   // Who selected each note, local user included, so the outline
   // and label can show every selector at once.
   const selectorsByNote = new Map<string, PresenceUser[]>();
@@ -4117,6 +4191,19 @@ function Board({
         )
       : 0;
 
+  // Whether a timed session is still running on the clock.
+  // Every client computes this from the same end time in the
+  // shared document, so hiding and revealing agree everywhere.
+  const timedRunning =
+    votingSession !== null && isTimedSessionRunning(votingSession, nowMs);
+
+  // The votes this user may see right now. During a running
+  // timed session that is only their own dots from this session,
+  // plus dots from earlier sessions — everyone else's are
+  // hidden, so the badges never leak the room's votes before
+  // the reveal.
+  const viewableVotes = visibleVotes(votes, votingSession, user.id, nowMs);
+
   // What the minimap draws: every frame, note, shape, and image,
   // in that order — frames underneath, so the items inside them
   // stay visible. Comments and votes are not shown: they are
@@ -4153,9 +4240,11 @@ function Board({
   // everyone. Nothing when the item has no dots — the badge
   // only appears once a dot lands. It never takes clicks: it
   // sits over the item, and a click passes through to the item
-  // underneath.
+  // underneath. During a running timed session the count uses
+  // only the votes this user may see, so nobody else's dots
+  // leak through the badge.
   function voteBadge(itemId: string): React.ReactNode {
-    const count = countItemVotes(votes, itemId);
+    const count = countItemVotes(viewableVotes, itemId);
     if (count === 0) return null;
     return (
       <span
@@ -4389,25 +4478,53 @@ function Board({
       {/* Dot voting: the session controls. Starting a session
           opens voting for everyone on the board; ending it
           freezes the dots in place; clearing removes them all
-          (one undo brings them back). */}
+          (one undo brings them back). A timed session hides
+          everyone's dots until the clock runs out, then reveals
+          them all at once — only the starter can end it early,
+          and clearing is off while it runs so hidden dots are
+          never wiped blind. */}
       <div className="voting-bar" role="group" aria-label="Dot voting">
         {votingSession?.active === true ? (
-          <>
-            <span className="voting-status">
-              Voting open, started by {votingSession.startedByName}. You have {myDotsLeft} of{" "}
-              {votingSession.dotsPerPerson} dots left.
-            </span>
-            <button type="button" onClick={endVoting}>
-              End voting
-            </button>
-            <button type="button" onClick={clearVotes} disabled={votes.length === 0}>
-              Clear votes
-            </button>
-          </>
+          timedRunning ? (
+            <>
+              <span className="voting-status">
+                Timed voting session —{" "}
+                <span className="voting-timer">
+                  {formatSessionCountdown(remainingSessionMs(votingSession, nowMs))}
+                </span>{" "}
+                left, started by {votingSession.startedByName}. You have {myDotsLeft} of{" "}
+                {votingSession.dotsPerPerson} dots left. Votes stay hidden until the time
+                runs out.
+              </span>
+              {votingSession.startedBy === user.id && (
+                <button type="button" onClick={endVoting}>
+                  End now
+                </button>
+              )}
+              <button type="button" onClick={clearVotes} disabled>
+                Clear votes
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="voting-status">
+                Voting open, started by {votingSession.startedByName}. You have {myDotsLeft}{" "}
+                of {votingSession.dotsPerPerson} dots left.
+              </span>
+              <button type="button" onClick={endVoting}>
+                End voting
+              </button>
+              <button type="button" onClick={clearVotes} disabled={votes.length === 0}>
+                Clear votes
+              </button>
+            </>
+          )
         ) : votingSession ? (
           <>
             <span className="voting-status">
-              Voting ended. The dots are frozen. Started by {votingSession.startedByName}.
+              {votingSession.timed
+                ? `Timed session ended — all votes are now visible. Started by ${votingSession.startedByName}.`
+                : `Voting ended. The dots are frozen. Started by ${votingSession.startedByName}.`}
             </span>
             <label className="voting-dots-label">
               Dots per person
@@ -4423,8 +4540,25 @@ function Board({
                 ))}
               </select>
             </label>
+            <label className="voting-dots-label">
+              Session length
+              <select
+                aria-label="Timed session length"
+                value={timedDurationChoice}
+                onChange={(event) => setTimedDurationChoice(Number(event.target.value))}
+              >
+                {TIMED_SESSION_DURATIONS_MINUTES.map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {minutes} min
+                  </option>
+                ))}
+              </select>
+            </label>
             <button type="button" onClick={startVoting}>
               Start new voting
+            </button>
+            <button type="button" onClick={startTimedSession}>
+              Start timed session
             </button>
             <button type="button" onClick={clearVotes} disabled={votes.length === 0}>
               Clear votes
@@ -4447,8 +4581,25 @@ function Board({
                 ))}
               </select>
             </label>
+            <label className="voting-dots-label">
+              Session length
+              <select
+                aria-label="Timed session length"
+                value={timedDurationChoice}
+                onChange={(event) => setTimedDurationChoice(Number(event.target.value))}
+              >
+                {TIMED_SESSION_DURATIONS_MINUTES.map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {minutes} min
+                  </option>
+                ))}
+              </select>
+            </label>
             <button type="button" onClick={startVoting}>
               Start voting
+            </button>
+            <button type="button" onClick={startTimedSession}>
+              Start timed session
             </button>
           </>
         )}

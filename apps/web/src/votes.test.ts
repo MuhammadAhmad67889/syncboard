@@ -137,6 +137,8 @@ describe("readVotingSession / writeVotingSession", () => {
       startedBy: "user-1",
       startedByName: "Sara",
       session: 2,
+      timed: false,
+      endsAt: 0,
     };
     doc.transact(() => {
       writeVotingSession(votingMap, session);
@@ -171,6 +173,8 @@ describe("readVotingSession / writeVotingSession", () => {
         startedBy: "user-1",
         startedByName: "Sara",
         session: 1,
+        timed: false,
+        endsAt: 0,
       });
     });
     expect(readVotingSession(votingMap)?.dotsPerPerson).toBe(3);
@@ -186,8 +190,75 @@ describe("readVotingSession / writeVotingSession", () => {
         startedBy: "user-1",
         startedByName: "Sara",
         session: 1,
+        timed: false,
+        endsAt: 0,
       });
     });
     expect(readVotingSession(votingMap)?.active).toBe(false);
+  });
+
+  it("round-trips a timed session with its end time", () => {
+    const doc = new Y.Doc();
+    const votingMap = doc.getMap<unknown>("voting");
+    doc.transact(() => {
+      writeVotingSession(votingMap, {
+        active: true,
+        dotsPerPerson: 3,
+        startedBy: "user-1",
+        startedByName: "Sara",
+        session: 2,
+        timed: true,
+        endsAt: 1794836400000,
+      });
+    });
+    expect(readVotingSession(votingMap)).toEqual({
+      active: true,
+      dotsPerPerson: 3,
+      startedBy: "user-1",
+      startedByName: "Sara",
+      session: 2,
+      timed: true,
+      endsAt: 1794836400000,
+    });
+  });
+
+  it("reads a session with no timed fields as plain open voting", () => {
+    // A session written before timed sessions existed has no
+    // timed or endsAt fields: it reads as not timed, so its
+    // dots stay visible exactly as before.
+    const doc = new Y.Doc();
+    const votingMap = doc.getMap<unknown>("voting");
+    doc.transact(() => {
+      votingMap.set("active", true);
+      votingMap.set("dotsPerPerson", 3);
+      votingMap.set("startedBy", "user-1");
+      votingMap.set("startedByName", "Sara");
+      votingMap.set("session", 1);
+    });
+    expect(readVotingSession(votingMap)).toEqual({
+      active: true,
+      dotsPerPerson: 3,
+      startedBy: "user-1",
+      startedByName: "Sara",
+      session: 1,
+      timed: false,
+      endsAt: 0,
+    });
+  });
+
+  it("reads a bad end time as not timed", () => {
+    const doc = new Y.Doc();
+    const votingMap = doc.getMap<unknown>("voting");
+    doc.transact(() => {
+      votingMap.set("active", true);
+      votingMap.set("dotsPerPerson", 3);
+      votingMap.set("startedBy", "user-1");
+      votingMap.set("startedByName", "Sara");
+      votingMap.set("session", 1);
+      votingMap.set("timed", true);
+      votingMap.set("endsAt", -500);
+    });
+    const session = readVotingSession(votingMap);
+    expect(session?.endsAt).toBe(0);
   });
 });
