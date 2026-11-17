@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import {
@@ -147,6 +147,14 @@ import {
   buildWhosHereRows,
   type WhosHereRow as WhosHereRowData,
 } from "./presence";
+import {
+  findPresenter,
+  fitFrameView,
+  interpolateView,
+  sortFramesForPresentation,
+  stepSlideIndex,
+  type CameraView,
+} from "./present";
 import { buildBoardLink } from "./share";
 
 // The sync server address, from the environment.
@@ -383,6 +391,7 @@ function asPresenceUser(state: unknown): PresenceUser | null {
   const selected = record.selectedNoteIds;
   const selectedShapes = record.selectedShapeIds;
   const selectedTexts = record.selectedTextIds;
+  const presenting = record.presentingFrameId;
   return {
     id: record.id,
     name: record.name,
@@ -397,6 +406,7 @@ function asPresenceUser(state: unknown): PresenceUser | null {
     selectedTextIds: Array.isArray(selectedTexts)
       ? selectedTexts.filter((id): id is string => typeof id === "string")
       : [],
+    presentingFrameId: typeof presenting === "string" ? presenting : null,
   };
 }
 
@@ -1033,6 +1043,7 @@ function Board({
     selectedNoteIds: [],
     selectedShapeIds: [],
     selectedTextIds: [],
+    presentingFrameId: null,
   });
   // When the last cursor position was sent, for the ~30/s throttle.
   const lastCursorSentRef = useRef(0);
@@ -1057,6 +1068,44 @@ function Board({
   const FRAME_TITLE_INSET = 12;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // Present mode: the index of the slide being shown, or null
+  // when not presenting. The slides are the frames in
+  // presentation order; the current frame id is broadcast
+  // through Awareness so other viewers follow along.
+  const [presentIndex, setPresentIndex] = useState<number | null>(null);
+  const slides = useMemo(() => sortFramesForPresentation(frames), [frames]);
+  // Mirrors of present state, so the once-bound keyboard handler
+  // and the camera animation can read them without going stale.
+  const presentIndexRef = useRef<number | null>(null);
+  const slidesRef = useRef<Frame[]>([]);
+  const boardSizeRef = useRef({ w: 0, h: 0 });
+  const cameraRef = useRef<CameraView>({ zoom: 1, pan: { x: 0, y: 0 } });
+  // The camera animation in flight, if any — a new move cancels
+  // it, so the camera never chases two targets at once.
+  const cameraAnimationRef = useRef<number | null>(null);
+  // The frame this viewer is following, if any — set when a
+  // presenter's slide moves our camera, so the same slide does
+  // not re-animate on every presence refresh.
+  const followedFrameRef = useRef<string | null>(null);
+  useEffect(() => {
+    presentIndexRef.current = presentIndex;
+  }, [presentIndex]);
+  useEffect(() => {
+    slidesRef.current = slides;
+  }, [slides]);
+  useEffect(() => {
+    boardSizeRef.current = boardSize;
+  }, [boardSize]);
+  useEffect(() => {
+    cameraRef.current = { zoom, pan };
+  }, [zoom, pan]);
+  useEffect(() => {
+    return () => {
+      if (cameraAnimationRef.current !== null) {
+        cancelAnimationFrame(cameraAnimationRef.current);
+      }
+    };
+  }, []);
   // The transformed layer inside the board — the notes live in it.
   const canvasRef = useRef<HTMLDivElement | null>(null);
   // The pan in progress, if any — same shape as a note drag.
@@ -1665,6 +1714,84 @@ function Board({
   function resetView(): void {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+  }
+
+  // Moves the camera to fit a frame in view. The move is
+  // animated over about a third of a second — except with
+  // reduced motion on, where the camera jumps at once. A new
+  // move cancels the one in flight, so the camera never chases
+  // two targets. Reads the current view and board size from
+  // refs, so the once-bound keyboard handler can call it too.
+  function moveCameraToFrame(frame: Frame): void {
+    const size = boardSizeRef.current;
+    const target = fitFrameView(frame, size.w, size.h, MIN_ZOOM, MAX_ZOOM);
+    if (!target) return;
+    if (cameraAnimationRef.current !== null) {
+      cancelAnimationFrame(cameraAnimationRef.current);
+      cameraAnimationRef.current = null;
+    }
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      cameraRef.current = target;
+      setZoom(target.zoom);
+      setPan(target.pan);
+      return;
+    }
+    const start = cameraRef.current;
+    // Reading the clock here starts the animation, and this is
+    // an event/effect handler, not render — it only runs when a
+    // slide change asks the camera to move.
+    // eslint-disable-next-line react-hooks/purity
+    const startedAt = performance.now();
+    const durationMs = 350;
+    // The end view comes in as a parameter, so the type stays
+    // narrowed inside this closure.
+    function tick(now: number, end: CameraView): void {
+      const view = interpolateView(start, end, (now - startedAt) / durationMs);
+      cameraRef.current = view;
+      setZoom(view.zoom);
+      setPan(view.pan);
+      if (now - startedAt < durationMs) {
+        cameraAnimationRef.current = requestAnimationFrame((next) => tick(next, end));
+      } else {
+        cameraAnimationRef.current = null;
+      }
+    }
+    cameraAnimationRef.current = requestAnimationFrame((now) => tick(now, target));
+  }
+
+  // Shows a slide: updates the present state, broadcasts the
+  // frame id through Awareness so other viewers follow, and
+  // moves the presenter's camera to the frame. The index is
+  // clamped, so a stale index after a frame is deleted still
+  // lands on a real slide.
+  function goToSlide(index: number): void {
+    const slides = slidesRef.current;
+    if (slides.length === 0) return;
+    const clamped = Math.min(Math.max(index, 0), slides.length - 1);
+    const frame = slides[clamped];
+    presentIndexRef.current = clamped;
+    setPresentIndex(clamped);
+    localPresenceRef.current.presentingFrameId = frame.id;
+    publishPresence();
+    moveCameraToFrame(frame);
+  }
+
+  // Starts presenting at the first slide. Nothing happens with
+  // no frames — the header button is disabled then too.
+  function startPresent(): void {
+    if (slidesRef.current.length === 0) return;
+    goToSlide(0);
+  }
+
+  // Leaves present mode and stops broadcasting, so viewers stop
+  // following. Their cameras stay where they are.
+  function exitPresent(): void {
+    if (presentIndexRef.current === null) return;
+    presentIndexRef.current = null;
+    setPresentIndex(null);
+    localPresenceRef.current.presentingFrameId = null;
+    publishPresence();
   }
 
   // The minimap's geometry from the current board state: the
@@ -3464,6 +3591,8 @@ function Board({
   // Ctrl+Z is caught even while typing: the textarea is controlled
   // by the shared document, so the browser's native text undo
   // would fight React — the UndoManager is the one that works.
+  // While presenting, Escape leaves present mode and the arrow
+  // keys step through the slides instead of doing anything else.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       const target = event.target as HTMLElement | null;
@@ -3472,6 +3601,24 @@ function Board({
         (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
       const mod = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
+      if (presentIndexRef.current !== null) {
+        if (event.key === "Escape") {
+          exitPresent();
+          return;
+        }
+        if (!editingText && !mod) {
+          if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+            event.preventDefault();
+            goToSlide(stepSlideIndex(presentIndexRef.current, 1, slidesRef.current.length));
+            return;
+          }
+          if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+            event.preventDefault();
+            goToSlide(stepSlideIndex(presentIndexRef.current, -1, slidesRef.current.length));
+            return;
+          }
+        }
+      }
       if (event.key === "Escape") {
         setTool("select");
         setConnectorPendingFromId(null);
@@ -3524,6 +3671,46 @@ function Board({
     // not from state, so it is never stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keeps present mode honest when the slides change under it:
+  // a deleted current slide moves to the nearest remaining one,
+  // and with no frames left present mode ends. The slide list
+  // re-sorts when frames move, so the index is re-checked on
+  // every change rather than trusted.
+  useEffect(() => {
+    if (presentIndex === null) return;
+    if (slides.length === 0) {
+      exitPresent();
+      return;
+    }
+    if (presentIndex >= slides.length) {
+      goToSlide(slides.length - 1);
+    }
+    // goToSlide and exitPresent are plain component functions
+    // that only touch refs and state setters — re-running the
+    // effect when they change identity would be noise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slides, presentIndex]);
+
+  // Follows the presenter: when someone else is presenting a
+  // frame this view is not already on, the camera moves to it.
+  // Our own presentation never follows itself — our own state
+  // is not in the presence list — and a manual pan is respected
+  // until the presenter moves to another slide.
+  useEffect(() => {
+    if (presentIndex !== null) return;
+    const presenter = findPresenter(presence);
+    const frameId = presenter?.presentingFrameId ?? null;
+    if (frameId === null) {
+      followedFrameRef.current = null;
+      return;
+    }
+    if (frameId === followedFrameRef.current) return;
+    const frame = slides.find((item) => item.id === frameId);
+    if (!frame) return;
+    followedFrameRef.current = frameId;
+    moveCameraToFrame(frame);
+  }, [presence, slides, presentIndex]);
 
   // Who selected each note, local user included, so the outline
   // and label can show every selector at once.
@@ -3680,6 +3867,9 @@ function Board({
   // The name of the board on screen, for the header. The list
   // may still be loading, so the board id stands in until then.
   const currentBoardName = boards.find((board) => board.id === boardId)?.name ?? boardId;
+  // Who is presenting right now, if anyone — the banner and the
+  // follow effect both read this, so it is computed once here.
+  const presenter = findPresenter(presence);
 
   return (
     <div className="board-page">
@@ -3740,6 +3930,22 @@ function Board({
         >
           Snapshots
           {snapshots !== null && snapshots.length > 0 ? ` (${snapshots.length})` : ""}
+        </button>
+        <button
+          type="button"
+          className="toolbar-button"
+          onClick={presentIndex !== null ? exitPresent : startPresent}
+          disabled={presentIndex === null && frames.length === 0}
+          aria-label={presentIndex !== null ? "Exit present mode" : "Present"}
+          title={
+            presentIndex !== null
+              ? "Stop presenting"
+              : frames.length === 0
+                ? "Add a frame to present it"
+                : "Present the frames as slides"
+          }
+        >
+          {presentIndex !== null ? "Presenting…" : "Present"}
         </button>
         <div className="export-controls" role="group" aria-label="Export and import">
           <button
@@ -3812,6 +4018,44 @@ function Board({
           Sign out
         </button>
       </header>
+      {presentIndex !== null && slides.length > 0 && (
+        <div className="present-bar" role="group" aria-label="Present mode">
+          <span className="present-title">
+            {slides[Math.min(presentIndex, slides.length - 1)].title}
+          </span>
+          <span className="present-count">
+            Slide {Math.min(presentIndex, slides.length - 1) + 1} of {slides.length}
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              goToSlide(stepSlideIndex(presentIndex, -1, slides.length))
+            }
+            disabled={presentIndex === 0}
+            aria-label="Previous slide"
+          >
+            ← Previous
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              goToSlide(stepSlideIndex(presentIndex, 1, slides.length))
+            }
+            disabled={presentIndex >= slides.length - 1}
+            aria-label="Next slide"
+          >
+            Next →
+          </button>
+          <button type="button" onClick={exitPresent} aria-label="Exit present mode">
+            Exit
+          </button>
+        </div>
+      )}
+      {presentIndex === null && presenter && (
+        <p className="present-banner" role="status">
+          {presenter.name} is presenting
+        </p>
+      )}
       {notice && (
         <p className="board-notice" role="status">
           {notice}{" "}
