@@ -298,6 +298,7 @@ export function createBoardStore(dbPath: string): BoardStore {
       frames: 0,
       connectors: 0,
       images: 0,
+      voiceNotes: 0,
     };
     let parsed: unknown;
     try {

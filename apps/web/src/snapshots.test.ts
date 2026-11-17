@@ -11,7 +11,7 @@ import {
 } from "./snapshots";
 
 function counts(partial: Partial<SnapshotCounts>): SnapshotCounts {
-  return { notes: 0, shapes: 0, texts: 0, frames: 0, connectors: 0, images: 0, ...partial };
+  return { notes: 0, shapes: 0, texts: 0, frames: 0, connectors: 0, images: 0, voiceNotes: 0, ...partial };
 }
 
 function meta(id: string, createdAt: string): BoardSnapshotMeta {
@@ -55,9 +55,9 @@ describe("snapshotCountsLabel", () => {
   it("uses the singular for one item", () => {
     expect(
       snapshotCountsLabel(
-        counts({ notes: 1, shapes: 1, texts: 1, frames: 1, connectors: 1, images: 1 }),
+        counts({ notes: 1, shapes: 1, texts: 1, frames: 1, connectors: 1, images: 1, voiceNotes: 1 }),
       ),
-    ).toBe("1 note · 1 shape · 1 text box · 1 frame · 1 connector · 1 image");
+    ).toBe("1 note · 1 shape · 1 text box · 1 frame · 1 connector · 1 image · 1 voice note");
   });
 
   it("reads 'Empty board' for a snapshot with nothing in it", () => {
@@ -108,6 +108,9 @@ function fullExport(): BoardExport {
     frames: [{ id: "f1", x: 0, y: 0, w: 480, h: 320, color: "pink", title: "Frame" }],
     connectors: [{ id: "c1", fromId: "n1", toId: "s1", color: "yellow" }],
     images: [{ id: "i1", x: 70, y: 80, w: 400, h: 300, dataUrl: TINY_PNG }],
+    voiceNotes: [
+      { id: "v1", x: 90, y: 100, dataUrl: "data:audio/webm;base64,AAAA", durationSeconds: 8 },
+    ],
   };
 }
 
@@ -124,6 +127,8 @@ describe("snapshot capture and restore", () => {
     expect(captured.connectors).toHaveLength(1);
     expect(captured.images).toHaveLength(1);
     expect(captured.images[0].dataUrl).toBe(TINY_PNG);
+    expect(captured.voiceNotes).toHaveLength(1);
+    expect(captured.voiceNotes[0].durationSeconds).toBe(8);
 
     // Restore: the captured export, applied to a different
     // document, reads back identical.
@@ -154,11 +159,13 @@ describe("snapshot capture and restore", () => {
       frames: [],
       connectors: [],
       images: [],
+      voiceNotes: [],
     };
     applyBoardExport(doc, empty, "test");
     const readBack = exportDocToBoard(doc, "board-x");
     expect(readBack.notes).toEqual([]);
     expect(readBack.shapes).toEqual([]);
     expect(readBack.images).toEqual([]);
+    expect(readBack.voiceNotes).toEqual([]);
   });
 });
