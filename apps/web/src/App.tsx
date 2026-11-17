@@ -172,6 +172,7 @@ import {
   stepSlideIndex,
   type CameraView,
 } from "./present";
+import { planAutoOrganize } from "./autoOrganize";
 import { buildBoardLink } from "./share";
 
 // The sync server address, from the environment.
@@ -1140,6 +1141,32 @@ function Board({
   // through Awareness so other viewers follow along.
   const [presentIndex, setPresentIndex] = useState<number | null>(null);
   const slides = useMemo(() => sortFramesForPresentation(frames), [frames]);
+  // Auto-organize: the plan for the board right now — the
+  // frames it would create and the notes it would move — or
+  // null when no two free notes share a word. The button
+  // disables then, so the user never opens a dialog that can
+  // do nothing. The frames land below everything already on
+  // the board, so the layout needs the whole content as boxes.
+  const contentBoxes = useMemo<Box[]>(
+    () => [
+      ...notes,
+      ...frames,
+      ...shapes,
+      ...texts,
+      ...images,
+      ...voiceNotes.map((voiceNote) => ({
+        x: voiceNote.x,
+        y: voiceNote.y,
+        w: VOICE_NOTE_SIZE.w,
+        h: VOICE_NOTE_SIZE.h,
+      })),
+    ],
+    [notes, frames, shapes, texts, images, voiceNotes],
+  );
+  const organizePlan = useMemo(
+    () => planAutoOrganize(notes, frames, contentBoxes),
+    [notes, frames, contentBoxes],
+  );
   // Mirrors of present state, so the once-bound keyboard handler
   // and the camera animation can read them without going stale.
   const presentIndexRef = useRef<number | null>(null);
@@ -1902,6 +1929,49 @@ function Board({
     setPresentIndex(null);
     localPresenceRef.current.presentingFrameId = null;
     publishPresence();
+  }
+
+  // Runs auto-organize: one confirm step first, since it moves
+  // many notes at once — then one transaction creates the
+  // frames and moves the notes, so a single Ctrl+Z undoes the
+  // whole organize. Notes with no shared word, and notes
+  // already in a frame, stay exactly where they are.
+  function autoOrganize(): void {
+    const doc = docRef.current;
+    const notesMap = notesMapRef.current;
+    const framesMap = framesMapRef.current;
+    const plan = organizePlan;
+    if (!doc || !notesMap || !framesMap || !plan) return;
+    if (
+      !window.confirm(
+        `Group ${plan.noteCount} notes into ${plan.frameCount} frames? Notes with no shared word stay where they are.`,
+      )
+    ) {
+      return;
+    }
+    doc.transact(() => {
+      for (const group of plan.groups) {
+        const frame = createFrame(
+          crypto.randomUUID(),
+          group.frame.x,
+          group.frame.y,
+          group.frame.w,
+          group.frame.h,
+          group.color,
+          group.title,
+        );
+        framesMap.set(frame.id, buildFrameMap(frame));
+        for (const placement of group.placements) {
+          const noteMap = notesMap.get(placement.noteId);
+          if (!noteMap) continue;
+          noteMap.set("x", placement.x);
+          noteMap.set("y", placement.y);
+        }
+      }
+    }, localOrigin);
+    // The organize is its own undo step: the next change starts
+    // a fresh one instead of joining it.
+    undoManagerRef.current?.stopCapturing();
   }
 
   // The minimap's geometry from the current board state: the
@@ -4341,6 +4411,20 @@ function Board({
           }
         >
           {presentIndex !== null ? "Presenting…" : "Present"}
+        </button>
+        <button
+          type="button"
+          className="toolbar-button"
+          onClick={autoOrganize}
+          disabled={organizePlan === null}
+          aria-label="Auto-organize"
+          title={
+            organizePlan === null
+              ? "No two free notes share a word to group by"
+              : `Group ${organizePlan.noteCount} notes into ${organizePlan.frameCount} frames`
+          }
+        >
+          Auto-organize
         </button>
         <div className="export-controls" role="group" aria-label="Export and import">
           <button
