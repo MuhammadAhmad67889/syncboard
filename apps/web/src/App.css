@@ -710,6 +710,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The countdown in a timed session: accent colour so the
+   remaining time stands out from the status text. */
+.voting-timer {
+  font-weight: 700;
+  color: var(--color-accent);
+  font-variant-numeric: tabular-nums;
+}
+
 .voting-dots-label {
   display: flex;
   align-items: center;

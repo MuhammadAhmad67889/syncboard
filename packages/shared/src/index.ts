@@ -506,12 +506,22 @@ export function createVote(
 // frozen, visible, and clearable. The session number counts
 // up from 1 each time a session starts, so a vote knows which
 // session it belongs to.
+//
+// A timed session is a voting round with a clock: votes stay
+// hidden until the time runs out, then reveal all at once.
+// timed is false for the plain open voting that existed before.
+// endsAt is the epoch ms the session ends — it lives in the
+// shared document, so every client and every late joiner sees
+// the same end time, and the session still ends on time if the
+// facilitator leaves. endsAt is 0 when the session is not timed.
 export interface VotingSession {
   active: boolean;
   dotsPerPerson: number;
   startedBy: string;
   startedByName: string;
   session: number;
+  timed: boolean;
+  endsAt: number;
 }
 
 // The dots each person gets when a session starts, unless the
@@ -520,6 +530,54 @@ export const DEFAULT_DOTS_PER_PERSON = 3;
 
 // The numbers the starter can pick from.
 export const DOTS_PER_PERSON_OPTIONS = [1, 2, 3, 5, 10] as const;
+
+// The lengths a timed session can run, in minutes. The starter
+// picks one before starting; the session stores the end time,
+// not the length, so the countdown is the same everywhere.
+export const TIMED_SESSION_DURATIONS_MINUTES = [1, 3, 5] as const;
+
+// Whether a timed session is still running at this moment:
+// timed, open, and the end time still ahead. A timed session
+// whose clock has run out is over even if no client has written
+// the end yet — the reveal follows the clock, not the write.
+export function isTimedSessionRunning(session: VotingSession | null, nowMs: number): boolean {
+  return session !== null && session.timed && session.active && session.endsAt > nowMs;
+}
+
+// The milliseconds left in a timed session, never below zero,
+// so a session that already ended shows 0:00 instead of a
+// negative time.
+export function remainingSessionMs(session: VotingSession, nowMs: number): number {
+  return Math.max(0, session.endsAt - nowMs);
+}
+
+// The countdown text: "2:34" for two minutes thirty-four
+// seconds, "0:07" under a minute. Seconds are always two
+// digits, so the width does not jump as the clock ticks.
+export function formatSessionCountdown(remainingMs: number): string {
+  const totalSeconds = Math.ceil(Math.max(0, remainingMs) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+// The votes one person may see. During a timed session that is
+// still running, each voter sees only their own dots from this
+// session — everyone else's are hidden, and so are the totals,
+// so nobody can read the room before the reveal. Dots from
+// earlier sessions were already public, so they stay visible.
+// Once the session ends — or when it was never timed — every
+// dot is visible to everyone.
+export function visibleVotes(
+  votes: Vote[],
+  session: VotingSession | null,
+  userId: string,
+  nowMs: number,
+): Vote[] {
+  if (session === null || !isTimedSessionRunning(session, nowMs)) return votes;
+  const sessionNumber = session.session;
+  return votes.filter((vote) => vote.session !== sessionNumber || vote.userId === userId);
+}
 
 // The dots placed in one session only. The caller passes the
 // session number, so old dots — from an earlier session, or

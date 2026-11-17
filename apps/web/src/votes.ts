@@ -33,6 +33,16 @@ function asSession(value: unknown): number {
     : 0;
 }
 
+// The end time of a timed session, as epoch ms. A missing,
+// negative, or non-number value reads as 0 — not timed — so an
+// old session written before timed sessions existed still reads
+// as a plain open session.
+function asEndsAt(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : 0;
+}
+
 // Reads one vote out of the shared document into a plain
 // object React can render. Unknown or missing fields fall back
 // to defaults instead of crashing the board. A vote with no
@@ -74,6 +84,8 @@ export function readVotingSession(votingMap: VotingMap): VotingSession | null {
     startedBy: asText(votingMap.get("startedBy"), ""),
     startedByName: asText(votingMap.get("startedByName"), ""),
     session: asSession(votingMap.get("session")),
+    timed: votingMap.get("timed") === true,
+    endsAt: asEndsAt(votingMap.get("endsAt")),
   };
 }
 
@@ -90,4 +102,6 @@ export function writeVotingSession(
   votingMap.set("startedBy", session.startedBy);
   votingMap.set("startedByName", session.startedByName);
   votingMap.set("session", session.session);
+  votingMap.set("timed", session.timed);
+  votingMap.set("endsAt", session.endsAt);
 }
