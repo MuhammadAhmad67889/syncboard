@@ -174,6 +174,7 @@ import {
 } from "./present";
 import { planAutoOrganize } from "./autoOrganize";
 import { buildBoardLink } from "./share";
+import { popIn, settlePop, slideInFromRight, staggerIn } from "./motion";
 
 // The sync server address, from the environment.
 const SYNC_URL = import.meta.env.VITE_SYNC_URL ?? "ws://localhost:1234";
@@ -500,6 +501,23 @@ export default function App() {
   // Shown on the auth screen when a restored session turned out
   // to be expired or invalid.
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+  // The sign-in screen's root, so its pieces can fade in once
+  // when the screen first appears.
+  const pickerRef = useRef<HTMLElement | null>(null);
+
+  // Entrance for the sign-in screen: the wordmark, tagline, form,
+  // and demo button rise in one after another. Runs once per
+  // visit to the screen; reduced-motion visitors skip it inside
+  // the helper.
+  useEffect(() => {
+    if (session || !pickerRef.current) {
+      return;
+    }
+    const pieces = Array.from(
+      pickerRef.current.querySelectorAll<HTMLElement>("[data-entrance]"),
+    );
+    staggerIn(pieces);
+  }, [session]);
 
   // Saves the session and opens the board. Called after a
   // successful login, signup, or demo sign-in.
@@ -593,14 +611,17 @@ export default function App() {
 
   if (!session) {
     return (
-      <main className="picker">
-        <h1>SyncBoard</h1>
-        <p>
+      <main className="picker" ref={pickerRef}>
+        <h1 data-entrance>SyncBoard</h1>
+        <p className="picker-tagline" data-entrance>
+          Real-time collaborative whiteboard
+        </p>
+        <p data-entrance>
           {mode === "login"
             ? "Log in to join the board."
             : "Create an account to join the board."}
         </p>
-        <form className="picker-form" onSubmit={(event) => void submitAuth(event)}>
+        <form className="picker-form" data-entrance onSubmit={(event) => void submitAuth(event)}>
           <label className="picker-field">
             Username
             <input
@@ -632,24 +653,25 @@ export default function App() {
           </button>
         </form>
         {mode === "login" ? (
-          <button type="button" className="picker-switch" onClick={() => switchMode("signup")}>
+          <button type="button" className="picker-switch" data-entrance onClick={() => switchMode("signup")}>
             No account yet? Create one
           </button>
         ) : (
-          <button type="button" className="picker-switch" onClick={() => switchMode("login")}>
+          <button type="button" className="picker-switch" data-entrance onClick={() => switchMode("login")}>
             Already have an account? Log in
           </button>
         )}
         <button
           type="button"
           className="picker-user"
+          data-entrance
           disabled={authBusy}
           onClick={() => void signInAsDemo()}
         >
           Try the demo
         </button>
-        {authNotice && <p className="picker-hint">{authNotice}</p>}
-        <p className="picker-hint">
+        {authNotice && <p className="picker-hint" data-entrance>{authNotice}</p>}
+        <p className="picker-hint" data-entrance>
           Usernames are 3–20 characters, letters, numbers, underscores, and hyphens only;
           passwords are at least 8 characters. The demo needs no account. Open the board in two
           tabs, one signed in and one on the demo, to see live sync.
@@ -952,6 +974,35 @@ function Board({
   // the wrapper it lives in, so a click outside it can close it.
   const [whosHereOpen, setWhosHereOpen] = useState(false);
   const whosHereRef = useRef<HTMLDivElement | null>(null);
+  // The who's-here card itself, so it can pop in when opened.
+  const whosHerePanelRef = useRef<HTMLDivElement | null>(null);
+  // The two side panels, so each can slide in when opened.
+  const commentsPanelRef = useRef<HTMLElement | null>(null);
+  const snapshotsPanelRef = useRef<HTMLElement | null>(null);
+  // The tool rail, so the newly active tool button can settle.
+  const toolRailRef = useRef<HTMLElement | null>(null);
+
+  // Chrome entrances: the who's-here card pops in from its
+  // anchor, and each side panel slides in from the right edge
+  // when it opens. The helpers skip everything under
+  // prefers-reduced-motion.
+  useEffect(() => {
+    if (whosHereOpen && whosHerePanelRef.current) {
+      popIn(whosHerePanelRef.current);
+    }
+  }, [whosHereOpen]);
+
+  useEffect(() => {
+    if (commentsOpen && commentsPanelRef.current) {
+      slideInFromRight(commentsPanelRef.current);
+    }
+  }, [commentsOpen]);
+
+  useEffect(() => {
+    if (snapshotsOpen && snapshotsPanelRef.current) {
+      slideInFromRight(snapshotsPanelRef.current);
+    }
+  }, [snapshotsOpen]);
 
   // Closes the who's-here list on Escape or a click outside it.
   // Only bound while the list is open, so the board's own
@@ -985,6 +1036,17 @@ function Board({
   const [snapshotsBusy, setSnapshotsBusy] = useState(false);
   // The active tool. Select is the default; Escape returns here.
   const [tool, setTool] = useState<Tool>("select");
+
+  // When the active tool changes, its rail button settles with
+  // a tiny pop, so the eye lands on the new selection.
+  useEffect(() => {
+    const active = toolRailRef.current?.querySelector<HTMLElement>(
+      ".tool-button.active",
+    );
+    if (active) {
+      settlePop(active);
+    }
+  }, [tool]);
   // Everyone else on the board, from Awareness. Our own presence
   // lives in localPresenceRef — the bar and cursors only show
   // other people.
@@ -4357,7 +4419,7 @@ function Board({
             ))}
           </button>
           {whosHereOpen && (
-            <div className="whos-here-panel" role="dialog" aria-label="Who's here">
+            <div className="whos-here-panel" role="dialog" aria-label="Who's here" ref={whosHerePanelRef}>
               <p className="whos-here-title">Who's here ({presence.length + 1})</p>
               <ul className="whos-here-list">
                 {buildWhosHereRows(user, presence, frames).map((row) => (
@@ -4367,14 +4429,20 @@ function Board({
             </div>
           )}
         </div>
+        {/* The board actions, grouped: Share on its own, then the
+            board tools, then export/import. They sit on their
+            own row under the title row; on a phone that row
+            scrolls sideways instead of wrapping. */}
+        <div className="header-actions">
         <button
           type="button"
-          className="toolbar-button"
+          className="toolbar-button header-primary"
           onClick={() => void shareBoard()}
           title="Copy a link to this board"
         >
           {shareCopied ? "Copied" : "Share"}
         </button>
+        <span className="header-divider" aria-hidden="true" />
         <button
           type="button"
           className="toolbar-button"
@@ -4426,6 +4494,7 @@ function Board({
         >
           Auto-organize
         </button>
+        <span className="header-divider" aria-hidden="true" />
         <div className="export-controls" role="group" aria-label="Export and import">
           <button
             type="button"
@@ -4481,6 +4550,11 @@ function Board({
             }}
           />
         </div>
+        </div>
+        {/* The account cluster: who you are, the connection
+            state, and sign out. It sits at the right of the
+            title row; the actions row wraps under it. */}
+        <div className="header-account">
         <span className="user-chip">
           <span className="user-dot" style={{ background: user.color }} />
           {user.name}
@@ -4496,6 +4570,7 @@ function Board({
         <button type="button" className="sign-out" onClick={onSignOut}>
           Sign out
         </button>
+        </div>
       </header>
       {presentIndex !== null && slides.length > 0 && (
         <div className="present-bar" role="group" aria-label="Present mode">
@@ -4847,7 +4922,8 @@ function Board({
             </>
           )}
         </aside>
-        <nav className="tool-rail" aria-label="Board tools">
+        <nav className="tool-rail" aria-label="Board tools" ref={toolRailRef}>
+          <span className="rail-group-label">Add</span>
           <button
             type="button"
             className="toolbar-button"
@@ -4878,6 +4954,7 @@ function Board({
             <span className="tool-label">Voice</span>
           </button>
           <span className="toolbar-divider" aria-hidden="true" />
+          <span className="rail-group-label">Tools</span>
           <div className="tool-picker" role="group" aria-label="Drawing tools">
             {TOOLS.map((item) => (
               <button
@@ -4912,6 +4989,7 @@ function Board({
             ))}
           </div>
           <span className="toolbar-divider" aria-hidden="true" />
+          <span className="rail-group-label">Color</span>
           <div className="color-picker" role="group" aria-label="Note and shape color">
             {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
               <button
@@ -4926,6 +5004,7 @@ function Board({
             ))}
           </div>
           <span className="toolbar-divider" aria-hidden="true" />
+          <span className="rail-group-label">Text</span>
           <div className="font-size-picker" role="group" aria-label="Text size">
             {TEXT_FONT_SIZES.map((size) => (
               <button
@@ -4942,6 +5021,7 @@ function Board({
             ))}
           </div>
           <span className="toolbar-divider" aria-hidden="true" />
+          <span className="rail-group-label">History</span>
           <button
             type="button"
             className="toolbar-button"
@@ -5897,6 +5977,7 @@ function Board({
         <aside
           className={`comments-panel${commentsOpen ? "" : " collapsed"}`}
           aria-label="Comments"
+          ref={commentsPanelRef}
         >
           <div className="comments-panel-head">
             <span className="comments-panel-title">
@@ -6005,6 +6086,7 @@ function Board({
         <aside
           className={`snapshots-panel${snapshotsOpen ? "" : " collapsed"}`}
           aria-label="Snapshots"
+          ref={snapshotsPanelRef}
         >
           <div className="snapshots-panel-head">
             <span className="snapshots-panel-title">
