@@ -75,7 +75,15 @@
   color: var(--color-ink-2);
 }
 
-/* The credential form sits on a sunken tray. */
+/* The one-line product description under the wordmark, so a
+   first-time visitor knows what they are signing in to. */
+.picker-tagline {
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* The credential form is a lifted paper card, so it reads as
+   the one surface on the page that takes input. */
 .picker-form {
   display: grid;
   gap: var(--space-sm);
@@ -84,7 +92,8 @@
   padding: var(--space-lg);
   border: 1px solid var(--color-rule);
   border-radius: var(--radius-card);
-  background: var(--color-paper-3);
+  background: var(--color-paper);
+  box-shadow: var(--shadow-card);
 }
 
 .picker-field {
@@ -97,11 +106,11 @@
 }
 
 .picker-input {
-  min-height: 40px;
+  min-height: 44px;
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--color-muted);
   border-radius: var(--radius-input);
-  background: var(--color-paper);
+  background: var(--color-paper-2);
   color: var(--color-ink);
   outline: 2px solid transparent;
   outline-offset: -2px;
@@ -109,7 +118,7 @@
 
 @media (hover: hover) {
   .picker-input:hover {
-    background: var(--color-paper-2);
+    background: var(--color-paper-3);
   }
 }
 
@@ -120,7 +129,7 @@
 
 /* The one filled primary on the page. */
 .picker-submit {
-  min-height: 40px;
+  min-height: 44px;
   padding: var(--space-xs) var(--space-md);
   border: 0;
   border-radius: var(--radius-input);
@@ -173,7 +182,7 @@
   gap: var(--space-xs);
   width: min(320px, 100%);
   justify-self: center;
-  min-height: 40px;
+  min-height: 44px;
   padding: var(--space-xs) var(--space-md);
   border: 1px solid var(--color-rule);
   border-radius: var(--radius-input);
@@ -233,7 +242,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
+  row-gap: var(--space-2xs);
   padding: var(--space-xs) var(--space-md);
   background: var(--color-ink);
   color: var(--color-paper);
@@ -243,18 +253,79 @@
   font-size: var(--text-lg);
 }
 
-/* The open board's name, next to the wordmark. */
+/* The open board's name, next to the wordmark. A long name
+   ellipsizes instead of pushing the actions off the row. */
 .board-name {
   font-weight: 600;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 28ch;
 }
 
-/* Who is on this board, as avatar circles. The wrapper takes the
-   free space, so Share, Export, and sign out sit at the right;
-   the group itself is a button that opens the who's-here list. */
+/* Header buttons run one size smaller than rail buttons, so
+   the whole chrome fits one row on a desktop screen. The
+   phone rules below restore the 44px touch height. */
+.board-header .toolbar-button,
+.board-header .sign-out {
+  min-height: 34px;
+  padding: var(--space-2xs) var(--space-sm);
+  font-size: var(--text-sm);
+}
+
+/* The header is two-tier: the title row (wordmark, board
+   name, who's here, account) and the actions row under it.
+   The actions wrapper always takes its own full-width row, so
+   the header never wraps into an orphan half-row at in-between
+   widths. On a phone the same row becomes a scrollable strip
+   (see the phone rules at the end). */
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-basis: 100%;
+  order: 2;
+}
+
+/* The account cluster takes the free space on the title row,
+   so it sits at the right edge at every width. */
+.header-account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+/* Hairlines between the header's action groups, so the row
+   scans as Share | board tools | export instead of one long
+   run of identical keys. */
+.header-divider {
+  width: 1px;
+  height: var(--space-lg);
+  flex: none;
+  background: color-mix(in oklab, var(--color-paper) 25%, transparent);
+}
+
+/* Share is the header's one primary action, so it takes the
+   filled accent key; everything else stays a paper key. */
+.board-header .header-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+@media (hover: hover) {
+  .board-header .header-primary:hover {
+    background: var(--color-accent-deep);
+  }
+}
+
+/* Who is on this board, as avatar circles. It sits next to
+   the board name; the group itself is a button that opens the
+   who's-here list. */
 .whos-here {
   position: relative;
-  margin-left: auto;
 }
 
 .header-presence {
@@ -375,7 +446,7 @@
   flex: none;
   flex-direction: column;
   gap: var(--space-sm);
-  width: 200px;
+  width: 216px;
   padding: var(--space-sm);
   border-right: 1px solid var(--color-rule);
   background: var(--color-paper-2);
@@ -532,7 +603,7 @@
 
 .board-tab-rename {
   min-height: 36px;
-  padding: 0 var(--space-xs);
+  padding: 0 var(--space-2xs);
   border: 0;
   background: transparent;
   color: var(--color-muted);
@@ -670,6 +741,16 @@
   color: var(--color-ink-2);
   font-size: var(--text-sm);
   font-weight: 600;
+  animation: board-notice-in var(--dur-short) var(--ease-out);
+}
+
+/* Notices slide down a touch as they appear, so the eye
+   catches the new line under the header. */
+@keyframes board-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 
 .board-notice button {
@@ -1060,6 +1141,19 @@
   justify-content: flex-start;
 }
 
+/* The micro label above each rail group (Add, Tools, Color,
+   Text, History): a mono figure-style caption, so the rail
+   scans in sections instead of one long run of keys. */
+.rail-group-label {
+  padding: 0 var(--space-2xs);
+  font-family: var(--font-outlier);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
 /* In the rail the dividers run across, between the groups. */
 .tool-rail .toolbar-divider {
   width: auto;
@@ -1408,7 +1502,7 @@
 }
 
 .voice-duration {
-  font-family: var(--font-mono);
+  font-family: var(--font-outlier);
   font-size: var(--text-sm);
   color: var(--color-muted);
   line-height: 1;
@@ -1584,6 +1678,15 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-xs);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--color-rule);
+}
+
+/* Collapsed, the head is only the toggle — a hairline under
+   it would read as a stray mark. */
+.comments-panel.collapsed .comments-panel-head {
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .comments-panel-title {
@@ -1591,8 +1694,13 @@
   white-space: nowrap;
 }
 
+/* The empty state is a dashed card, so "nothing here yet"
+   reads as a place waiting for content, not stray text. */
 .comments-empty {
   margin: 0;
+  padding: var(--space-sm);
+  border: 1px dashed var(--color-muted);
+  border-radius: var(--radius-card);
   font-size: var(--text-sm);
   color: var(--color-muted);
 }
@@ -1763,6 +1871,15 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-xs);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--color-rule);
+}
+
+/* Collapsed, the head is only the toggle — a hairline under
+   it would read as a stray mark. */
+.snapshots-panel.collapsed .snapshots-panel-head {
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .snapshots-panel-title {
@@ -1770,8 +1887,14 @@
   white-space: nowrap;
 }
 
+/* The empty state is a dashed card, matching the comments
+   panel, so "nothing here yet" reads as a place waiting for
+   content. */
 .snapshots-empty {
   margin: 0;
+  padding: var(--space-sm);
+  border: 1px dashed var(--color-muted);
+  border-radius: var(--radius-card);
   font-size: var(--text-sm);
   color: var(--color-muted);
 }
@@ -2108,6 +2231,53 @@
 
   .board-header h1 {
     font-size: var(--text-md);
+  }
+
+  /* The header's action buttons become one horizontally
+     scrollable strip on their own row, instead of wrapping
+     into four or five rows that eat half the screen. The
+     account cluster (who you are, connection state, sign out)
+     stays with the title row above the strip. */
+  .header-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    flex-basis: 100%;
+    order: 2;
+    gap: var(--space-xs);
+    padding-bottom: var(--space-2xs);
+    scrollbar-width: thin;
+  }
+
+  .header-actions > * {
+    flex: none;
+  }
+
+  .header-account {
+    order: 1;
+  }
+
+  /* Header buttons keep the 44px touch height on phones,
+     overriding the compact desktop size. */
+  .board-header .toolbar-button,
+  .board-header .sign-out {
+    min-height: 44px;
+  }
+
+  /* Rail group labels hide with the tool labels — the rail is
+     icon-only here, and a caption would set its width. */
+  .rail-group-label {
+    display: none;
+  }
+
+  /* The zoom pill never wraps into a stacked box on a phone:
+     minus, figure, plus, and Reset stay on one line. */
+  .board .zoom-controls {
+    flex-wrap: nowrap;
+  }
+
+  .zoom-label {
+    min-width: var(--space-lg);
   }
 
   .board-sidebar {
