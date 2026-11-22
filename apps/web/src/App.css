@@ -1214,6 +1214,13 @@
   min-height: 0;
 }
 
+/* The tap-to-close backdrop behind the phone panel drawers.
+   Desktop panels sit in the flow, so it never shows there —
+   the phone rules at the end turn it on. */
+.panel-backdrop {
+  display: none;
+}
+
 .tool-rail {
   display: flex;
   flex: none;
@@ -2395,8 +2402,14 @@
   align-items: center;
 }
 
-/* Under 40rem the type steps down and the chrome tightens. */
-@media (max-width: 40rem) {
+/* Under 48rem (768px) the board chrome rearranges for phones:
+   the header compacts into a title row, an account row, and a
+   scrollable actions strip; the voting bar becomes one
+   scrollable row; the side panels become overlay drawers with
+   a tap-to-close backdrop; and the tool rail moves to a bottom
+   toolbar so the canvas keeps the full width. Above this width
+   nothing here applies and the desktop layout is untouched. */
+@media (max-width: 48rem) {
   .picker {
     gap: var(--space-sm);
     padding: var(--space-md);
@@ -2406,19 +2419,79 @@
     font-size: var(--text-2xl);
   }
 
+  /* --- Header --- */
   .board-header {
     padding: var(--space-xs) var(--space-sm);
+    gap: var(--space-2xs) var(--space-xs);
   }
 
   .board-header h1 {
     font-size: var(--text-md);
   }
 
+  /* A long board name ellipsizes early on a phone, so the
+     title row (wordmark, name, who's online) stays one line. */
+  .board-name {
+    max-width: 13ch;
+  }
+
+  /* The presence group can shrink and clip its avatars rather
+     than pushing the title row onto a second line. */
+  .whos-here {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .header-presence {
+    gap: var(--space-2xs);
+    padding: var(--space-3xs) var(--space-2xs);
+    overflow: hidden;
+  }
+
+  .presence-count {
+    font-size: var(--text-xs);
+  }
+
+  /* The account cluster (theme picker, who you are, connection
+     state, sign out) takes its own full-width row under the
+     title row, spread edge to edge — nothing wraps mid-cluster
+     and every control stays reachable. */
+  .header-account {
+    order: 1;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--space-2xs);
+    margin-left: 0;
+  }
+
+  .theme-picker select {
+    min-height: 44px;
+    padding: var(--space-2xs) var(--space-xs);
+    font-size: var(--text-xs);
+  }
+
+  .user-chip {
+    font-size: var(--text-xs);
+  }
+
+  .status {
+    padding: var(--space-3xs) var(--space-xs);
+    font-size: var(--text-xs);
+  }
+
+  /* A sign-in error gets its own line instead of squeezing
+     the cluster. */
+  .auth-error {
+    flex-basis: 100%;
+    font-size: var(--text-xs);
+  }
+
   /* The header's action buttons become one horizontally
      scrollable strip on their own row, instead of wrapping
      into four or five rows that eat half the screen. The
-     account cluster (who you are, connection state, sign out)
-     stays with the title row above the strip. */
+     scrollbar hides — the cut-off button at the edge is the
+     scroll cue. */
   .header-actions {
     display: flex;
     flex-wrap: nowrap;
@@ -2427,68 +2500,185 @@
     order: 2;
     gap: var(--space-xs);
     padding-bottom: var(--space-2xs);
-    scrollbar-width: thin;
+    scrollbar-width: none;
+  }
+
+  .header-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .header-actions > * {
     flex: none;
   }
 
-  .header-account {
-    order: 1;
+  .export-controls {
+    flex-wrap: nowrap;
   }
 
   /* Header buttons keep the 44px touch height on phones,
-     overriding the compact desktop size. */
+     overriding the compact desktop size, but run tighter
+     sideways so more of the strip shows at once. */
   .board-header .toolbar-button,
   .board-header .sign-out {
     min-height: 44px;
+    padding: var(--space-2xs) var(--space-xs);
+    font-size: var(--text-xs);
   }
 
-  /* Rail group labels hide with the tool labels — the rail is
-     icon-only here, and a caption would set its width. */
+  /* --- Voting, present, templates, shortcuts bars --- */
+  /* One compact row each, scrolling sideways when the controls
+     do not fit — the status text stays on one line too, so the
+     row never grows into a wrapped block. */
+  .voting-bar,
+  .present-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: var(--space-2xs) var(--space-sm);
+    scrollbar-width: none;
+  }
+
+  .voting-bar::-webkit-scrollbar,
+  .present-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .voting-bar > *,
+  .present-bar > * {
+    flex: none;
+  }
+
+  .voting-status {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  .present-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .voting-dots-label {
+    white-space: nowrap;
+  }
+
+  .voting-dots-label select {
+    min-height: 40px;
+  }
+
+  .voting-bar button,
+  .present-bar button {
+    min-height: 40px;
+    white-space: nowrap;
+  }
+
+  .templates-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: var(--space-2xs) var(--space-sm);
+    scrollbar-width: none;
+  }
+
+  .templates-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .template-button {
+    flex: none;
+    max-width: 220px;
+  }
+
+  .template-close {
+    flex: none;
+    min-height: 40px;
+  }
+
+  .shortcuts-keys {
+    min-width: 7.5rem;
+  }
+
+  .shortcuts-row {
+    flex-wrap: wrap;
+    gap: var(--space-2xs) var(--space-sm);
+  }
+
+  .board-notice {
+    padding: var(--space-2xs) var(--space-sm);
+  }
+
+  /* --- Board area: canvas on top, tools along the bottom --- */
+  .board-main {
+    flex-direction: column;
+  }
+
+  .board {
+    order: 1;
+    min-height: 0;
+  }
+
+  /* The tool rail becomes a bottom toolbar: one horizontally
+     scrollable row of 44px icon keys, thumb-reachable, with
+     the safe-area inset honoured on notched phones. Group
+     labels and tool labels hide — the icons carry it, and a
+     caption would set the bar's height. */
+  .tool-rail {
+    order: 2;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    padding-bottom: calc(var(--space-xs) + env(safe-area-inset-bottom, 0px));
+    border-right: 0;
+    border-top: 1px solid var(--color-rule);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .tool-rail::-webkit-scrollbar {
+    display: none;
+  }
+
   .rail-group-label {
     display: none;
   }
 
-  /* The zoom pill never wraps into a stacked box on a phone:
-     minus, figure, plus, and Reset stay on one line. */
-  .board .zoom-controls {
-    flex-wrap: nowrap;
-  }
-
-  .zoom-label {
-    min-width: var(--space-lg);
-  }
-
-  .board-sidebar {
-    width: 160px;
+  .tool-rail .toolbar-button {
+    width: auto;
+    flex: none;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
     padding: var(--space-xs);
   }
 
-  .tool-rail {
-    gap: var(--space-xs);
-    padding: var(--space-xs);
-  }
-
-  /* Rail tools go icon-only, so the rail stays narrow. The
-     color dots drop to two to a row for the same reason. */
   .tool-rail .tool-label {
     display: none;
   }
 
-  .tool-rail .color-picker {
-    grid-template-columns: repeat(2, auto);
+  .tool-rail .tool-picker,
+  .tool-rail .font-size-picker {
+    flex-direction: row;
+    align-items: center;
+    flex: none;
   }
 
-  .tool-rail .toolbar-button {
-    justify-content: center;
-    padding: var(--space-xs);
+  .tool-rail .color-picker {
+    display: flex;
+    flex-wrap: nowrap;
+    flex: none;
+  }
+
+  .tool-rail .toolbar-divider {
+    width: 1px;
+    height: var(--space-lg);
+    flex: none;
   }
 
   /* Fingers need bigger targets than a mouse: every tappable
-     control in the rail, header, sidebar, and zoom controls
-     grows to 44px, and the color dots to 32px. */
+     control grows to 44px, and the color dots to 32px. */
   .toolbar-button {
     min-height: 44px;
   }
@@ -2496,10 +2686,7 @@
   .color-dot {
     width: 32px;
     height: 32px;
-  }
-
-  .zoom-button {
-    min-height: 44px;
+    flex: none;
   }
 
   .board-tab-button,
@@ -2510,32 +2697,114 @@
     min-height: 44px;
   }
 
-  /* On a phone the open comments panel floats over the board
-     instead of squeezing it — the collapsed strip stays in the
-     flow, at the right edge. */
+  /* --- Side panels as overlay drawers --- */
+  /* The backdrop dims the board behind an open drawer; tapping
+     it closes the panels. It sits above the canvas and the
+     collapsed tabs, below the drawers themselves. */
+  .panel-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 15;
+    padding: 0;
+    border: 0;
+    background: color-mix(in oklab, var(--color-band) 45%, transparent);
+    cursor: pointer;
+  }
+
+  /* The boards sidebar slides over the board from the left
+     instead of taking a column of it. Collapsed, it is just
+     its toggle button floating at the top-left corner. */
+  .board-sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    width: min(300px, 85vw);
+    padding: var(--space-sm);
+    box-shadow: var(--shadow-lift);
+  }
+
+  .board-sidebar.collapsed {
+    bottom: auto;
+    z-index: 12;
+    width: auto;
+    padding: var(--space-2xs);
+    border-right: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* The comments panel slides over the board from the right.
+     Collapsed, it is just its toggle floating at the top-right
+     corner. */
   .comments-panel {
     position: absolute;
     right: 0;
     top: 0;
     bottom: 0;
     z-index: 20;
-    width: 260px;
+    width: min(320px, 88vw);
     box-shadow: var(--shadow-lift);
   }
 
-  /* On a phone the open snapshots panel floats the same way,
-     at the right edge — a 390px screen cannot hold two 260px
-     panels side by side. When both panels are open it sits
-     above the comments panel (z-index 21), since it is the one
-     the user just opened. */
+  .comments-panel.collapsed {
+    bottom: auto;
+    z-index: 12;
+    width: auto;
+    padding: var(--space-2xs);
+    border-left: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* The snapshots panel floats the same way, at the right edge
+     — a 390px screen cannot hold two panels side by side.
+     When both panels are open it sits above the comments
+     panel (z-index 21), since it is the one the user just
+     opened. Collapsed, its toggle floats below the comments
+     toggle so the two never overlap. */
   .snapshots-panel {
     position: absolute;
     right: 0;
     top: 0;
     bottom: 0;
     z-index: 21;
-    width: 260px;
+    width: min(320px, 88vw);
     box-shadow: var(--shadow-lift);
+  }
+
+  .snapshots-panel.collapsed {
+    top: calc(var(--space-2xs) + 48px);
+    bottom: auto;
+    z-index: 12;
+    width: auto;
+    padding: var(--space-2xs);
+    border-left: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* --- Zoom controls and minimap --- */
+  /* The zoom pill never wraps into a stacked box on a phone:
+     minus, figure, plus, and Reset stay on one line, tucked
+     closer to the corner so it clears the bottom toolbar. */
+  .board .board-corner {
+    right: var(--space-sm);
+    bottom: var(--space-sm);
+  }
+
+  .board .zoom-controls {
+    flex-wrap: nowrap;
+  }
+
+  .zoom-label {
+    min-width: var(--space-lg);
+  }
+
+  .zoom-button {
+    min-height: 44px;
   }
 
   /* On a phone the minimap is hidden: at 180px wide it would
@@ -2543,18 +2812,6 @@
      the view is still adjustable. */
   .minimap {
     display: none;
-  }
-
-  .comments-panel.collapsed {
-    position: static;
-    width: auto;
-    box-shadow: none;
-  }
-
-  .snapshots-panel.collapsed {
-    position: static;
-    width: auto;
-    box-shadow: none;
   }
 
   /* On a phone the who's-here card is capped at the viewport
