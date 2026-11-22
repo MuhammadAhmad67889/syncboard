@@ -932,7 +932,7 @@ function Board({
   // the screen and leaves the board a sliver, so the toggle is
   // the way in instead of the default.
   const [sidebarOpen, setSidebarOpen] = useState(
-    () => window.innerWidth >= 640,
+    () => window.innerWidth >= 768,
   );
   const [notes, setNotes] = useState<Note[]>([]);
   // The shapes on the board, from the shared "shapes" map —
@@ -993,14 +993,14 @@ function Board({
   // The comments panel, right of the board: whether its thread
   // list is showing. Phones start collapsed, like the boards
   // sidebar — the open panel would take half a narrow screen.
-  const [commentsOpen, setCommentsOpen] = useState(() => window.innerWidth >= 640);
+  const [commentsOpen, setCommentsOpen] = useState(() => window.innerWidth >= 768);
   // The board's snapshots, newest first, from the server. Null
   // while they are still loading.
   const [snapshots, setSnapshots] = useState<BoardSnapshotMeta[] | null>(null);
   // The snapshots panel, beside the comments panel: whether its
   // list is showing. Phones start collapsed, for the same reason
   // as the comments panel.
-  const [snapshotsOpen, setSnapshotsOpen] = useState(() => window.innerWidth >= 640);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(() => window.innerWidth >= 768);
   // Whether the who's-here list under the header is open, and
   // the wrapper it lives in, so a click outside it can close it.
   const [whosHereOpen, setWhosHereOpen] = useState(false);
@@ -4936,6 +4936,22 @@ function Board({
         </div>
       )}
       <div className="board-main">
+        {/* Phone-only backdrop behind the open panel drawers:
+            tapping it closes whichever panels are open. On
+            desktop it never shows (the panels sit in the flow),
+            so it is display:none there. */}
+        {(sidebarOpen || commentsOpen || snapshotsOpen) && (
+          <button
+            type="button"
+            className="panel-backdrop"
+            aria-label="Close open panels"
+            onClick={() => {
+              setSidebarOpen(false);
+              setCommentsOpen(false);
+              setSnapshotsOpen(false);
+            }}
+          />
+        )}
         <aside className={`board-sidebar${sidebarOpen ? "" : " collapsed"}`} aria-label="Boards">
           <div className="board-sidebar-head">
             <span className="board-sidebar-title">Boards</span>
