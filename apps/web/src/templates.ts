@@ -1,4 +1,4 @@
-import type { NoteColor } from "@syncboard/shared";
+import type { Box, NoteColor } from "@syncboard/shared";
 
 // One frame in a template: its title, its position and size
 // relative to the template's top-left corner, and its color.
@@ -60,6 +60,17 @@ const RIGHT_X = (COLUMN_W + COLUMN_GAP) * 2;
 const NOTE_INSET_X = 24;
 const NOTE_INSET_Y = 56;
 
+// The starter note in a column spans the column's width minus
+// the inset on both sides, so the padding around it is even —
+// the note reads as belonging to the column instead of hugging
+// its left edge with a wide empty strip on the right.
+const COLUMN_NOTE_W = COLUMN_W - NOTE_INSET_X * 2;
+
+// The goal note in Sprint planning's wide banner frame: wider
+// than a column note, since the banner is three columns across
+// and a narrow note would get lost in it.
+const GOAL_NOTE_W = 480;
+
 // One column frame plus the starter note inside it. The note
 // is placed from the frame's own position, so a column can
 // move without its note being left behind.
@@ -78,7 +89,7 @@ function column(
       text: noteText,
       x: x + NOTE_INSET_X,
       y: y + NOTE_INSET_Y,
-      w: NOTE_W,
+      w: COLUMN_NOTE_W,
       h: NOTE_H,
       color: "yellow",
     },
@@ -137,11 +148,11 @@ export const TEMPLATES: BoardTemplate[] = [
       { title: "Branch four", x: RIGHT_X, y: 420, w: COLUMN_W, h: 200, color: "orange" },
     ],
     notes: [
-      { text: "Add an idea here", x: NOTE_INSET_X, y: NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
-      { text: "Add an idea here", x: RIGHT_X + NOTE_INSET_X, y: NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
-      { text: "Add the main idea here", x: COLUMN_W + COLUMN_GAP + NOTE_INSET_X, y: 180 + NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
-      { text: "Add an idea here", x: NOTE_INSET_X, y: 420 + NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
-      { text: "Add an idea here", x: RIGHT_X + NOTE_INSET_X, y: 420 + NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: NOTE_INSET_X, y: NOTE_INSET_Y, w: COLUMN_NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: RIGHT_X + NOTE_INSET_X, y: NOTE_INSET_Y, w: COLUMN_NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add the main idea here", x: COLUMN_W + COLUMN_GAP + NOTE_INSET_X, y: 180 + NOTE_INSET_Y, w: COLUMN_NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: NOTE_INSET_X, y: 420 + NOTE_INSET_Y, w: COLUMN_NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: RIGHT_X + NOTE_INSET_X, y: 420 + NOTE_INSET_Y, w: COLUMN_NOTE_W, h: NOTE_H, color: "yellow" },
     ],
   },
   {
@@ -177,7 +188,7 @@ export const TEMPLATES: BoardTemplate[] = [
       text: "Add the goal for this sprint",
       x: NOTE_INSET_X,
       y: NOTE_INSET_Y,
-      w: NOTE_W,
+      w: GOAL_NOTE_W,
       h: NOTE_H,
       color: "yellow",
     };
@@ -268,4 +279,49 @@ export function boxesOverlap(
   b: { x: number; y: number; w: number; h: number },
 ): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+// The clear space left between a freshly inserted template and
+// whatever is already on the board, when the template has to
+// move to avoid landing on top of it.
+const TEMPLATE_CLEARANCE_PX = 40;
+
+// Where a template should actually land. The board prefers the
+// centre of the visible view, but on a board that already has
+// content there the template would land on top of it — frames
+// over frames, notes over notes. So: start at the preferred
+// origin, and while the template's footprint covers anything
+// already on the board, drop it below the lowest thing in the
+// way (plus a clearance gap) and check again. The x never
+// changes — the template stays under where the user is
+// looking, just lower. On an empty board the preferred origin
+// comes back untouched.
+export function findTemplateOrigin(
+  template: BoardTemplate,
+  originX: number,
+  originY: number,
+  existing: Box[],
+): { x: number; y: number } {
+  const bounds = templateBounds(template);
+  let y = originY;
+  // Each pass either finds the footprint clear or moves y
+  // strictly down past at least one existing box, so the loop
+  // ends within existing.length + 1 passes.
+  for (let pass = 0; pass <= existing.length; pass += 1) {
+    const footprint = {
+      x: originX + bounds.x,
+      y: y + bounds.y,
+      w: bounds.w,
+      h: bounds.h,
+    };
+    let lowest = Number.NEGATIVE_INFINITY;
+    for (const box of existing) {
+      if (boxesOverlap(footprint, box)) {
+        lowest = Math.max(lowest, box.y + box.h);
+      }
+    }
+    if (lowest === Number.NEGATIVE_INFINITY) break;
+    y = Math.round(lowest + TEMPLATE_CLEARANCE_PX - bounds.y);
+  }
+  return { x: originX, y };
 }

@@ -5,6 +5,7 @@ import { buildFrameMap } from "./frames";
 import { buildNoteMap } from "./export";
 import {
   boxesOverlap,
+  findTemplateOrigin,
   placeTemplate,
   templateBounds,
   templateById,
@@ -125,6 +126,52 @@ describe("TEMPLATES", () => {
       for (const note of template.notes) {
         const inside = template.frames.some((frame) => boxCentreInFrame(frame, note));
         expect(inside).toBe(true);
+      }
+    }
+  });
+
+  it("keeps every template's notes from overlapping each other", () => {
+    for (const template of TEMPLATES) {
+      for (let i = 0; i < template.notes.length; i += 1) {
+        for (let j = i + 1; j < template.notes.length; j += 1) {
+          expect(boxesOverlap(template.notes[i], template.notes[j])).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("keeps every note fully inside one of its own frames, edges included", () => {
+    for (const template of TEMPLATES) {
+      for (const note of template.notes) {
+        const contained = template.frames.some(
+          (frame) =>
+            note.x >= frame.x &&
+            note.y >= frame.y &&
+            note.x + note.w <= frame.x + frame.w &&
+            note.y + note.h <= frame.y + frame.h,
+        );
+        expect(contained).toBe(true);
+      }
+    }
+  });
+
+  it("pads column notes evenly on both sides", () => {
+    // A starter note in a 320-wide column frame sits the same
+    // distance from both edges — no wide empty strip on one
+    // side. (The Brainstorm and Sprint-goal frames are wider
+    // than a column and lay their notes out differently.)
+    for (const template of TEMPLATES) {
+      for (const note of template.notes) {
+        const frame = template.frames.find(
+          (candidate) =>
+            candidate.w === 320 &&
+            note.x >= candidate.x &&
+            note.y >= candidate.y &&
+            note.x + note.w <= candidate.x + candidate.w &&
+            note.y + note.h <= candidate.y + candidate.h,
+        );
+        if (!frame) continue;
+        expect(note.x - frame.x).toBe(frame.x + frame.w - (note.x + note.w));
       }
     }
   });
@@ -254,5 +301,79 @@ describe("boxesOverlap", () => {
     expect(
       boxesOverlap({ x: 0, y: 0, w: 100, h: 100 }, { x: 50, y: 50, w: 100, h: 100 }),
     ).toBe(true);
+  });
+});
+
+describe("findTemplateOrigin", () => {
+  const kanban = templateById("kanban")!;
+
+  // The footprint a template would cover if placed at an
+  // origin — what must not overlap anything already there.
+  function footprintAt(origin: { x: number; y: number }) {
+    const bounds = templateBounds(kanban);
+    return {
+      x: origin.x + bounds.x,
+      y: origin.y + bounds.y,
+      w: bounds.w,
+      h: bounds.h,
+    };
+  }
+
+  it("keeps the preferred origin on an empty board", () => {
+    expect(findTemplateOrigin(kanban, 100, 50, [])).toEqual({ x: 100, y: 50 });
+  });
+
+  it("keeps the preferred origin when the content is elsewhere", () => {
+    const farAway = [{ x: 3000, y: 3000, w: 200, h: 200 }];
+    expect(findTemplateOrigin(kanban, 100, 50, farAway)).toEqual({ x: 100, y: 50 });
+  });
+
+  it("drops below content sitting on the preferred spot", () => {
+    // A frame exactly where the template wants to go.
+    const blocker = { x: 100, y: 50, w: 320, h: 360 };
+    const origin = findTemplateOrigin(kanban, 100, 50, [blocker]);
+    // Same x, and the template's top sits 40 below the
+    // blocker's bottom edge.
+    expect(origin).toEqual({ x: 100, y: 50 + 360 + 40 });
+    expect(boxesOverlap(footprintAt(origin), blocker)).toBe(false);
+  });
+
+  it("drops below a stack of content, not just the first box", () => {
+    const stack = [
+      { x: 100, y: 50, w: 320, h: 360 },
+      { x: 100, y: 500, w: 320, h: 360 },
+      { x: 100, y: 950, w: 320, h: 360 },
+    ];
+    const origin = findTemplateOrigin(kanban, 100, 50, stack);
+    for (const box of stack) {
+      expect(boxesOverlap(footprintAt(origin), box)).toBe(false);
+    }
+    expect(origin.y).toBeGreaterThan(950 + 360);
+  });
+
+  it("ignores content that only overlaps sideways beyond the template", () => {
+    // Same y band, but entirely to the right of the template's
+    // 1008-wide footprint at x=100 (which ends at 1108).
+    const beside = [{ x: 1200, y: 50, w: 320, h: 360 }];
+    expect(findTemplateOrigin(kanban, 100, 50, beside)).toEqual({ x: 100, y: 50 });
+  });
+
+  it("keeps two templates inserted at the same spot from overlapping", () => {
+    // Insert Kanban at the preferred spot, then ask where a
+    // second template with the same preference should go.
+    const first = placeTemplate(kanban, 100, 50);
+    const existing = [...first.frames, ...first.notes];
+    const secondOrigin = findTemplateOrigin(templateById("retro")!, 100, 50, existing);
+    const second = placeTemplate(templateById("retro")!, secondOrigin.x, secondOrigin.y);
+    for (const frame of second.frames) {
+      for (const box of existing) {
+        expect(boxesOverlap(frame, box)).toBe(false);
+      }
+    }
+    for (const note of second.notes) {
+      for (const box of existing) {
+        expect(boxesOverlap(note, box)).toBe(false);
+      }
+    }
   });
 });
