@@ -2,7 +2,7 @@
 // dependencies, so the web app and the sync server can both use it
 // without pulling in each other's code.
 
-// The six sticky-note colors. The hex values are the note
+// The nine sticky-note colors. The hex values are the note
 // backgrounds; the names are what the color picker shows.
 export const NOTE_COLORS = {
   yellow: "#fef08a",
@@ -11,6 +11,9 @@ export const NOTE_COLORS = {
   blue: "#bfdbfe",
   purple: "#ddd6fe",
   orange: "#fed7aa",
+  teal: "#99f6e4",
+  red: "#fecaca",
+  gray: "#e5e7eb",
 } as const;
 
 export type NoteColor = keyof typeof NOTE_COLORS;
@@ -28,14 +31,16 @@ export interface Note {
   text: string;
 }
 
-// One shape on the board: a rectangle, an ellipse, a line with an
-// arrowhead, or a freehand pen stroke. Position and size are in
-// board pixels, like a note. For a line, the endpoints are the
-// opposite corners of its box — (x, y) to (x + w, y + h) — so a
-// line is just a box with an arrow. For a pen stroke, points are
-// the stroke in absolute board pixels, and x/y/w/h are the
-// bounding box around them (kept in sync as the stroke grows).
-export type ShapeKind = "rect" | "ellipse" | "line" | "pen";
+// One shape on the board: a rectangle, an ellipse, a diamond, a
+// triangle, a star, a line with an arrowhead, or a freehand pen
+// stroke. Position and size are in board pixels, like a note.
+// For a line, the endpoints are the opposite corners of its box
+// — (x, y) to (x + w, y + h) — so a line is just a box with an
+// arrow. For a pen stroke, points are the stroke in absolute
+// board pixels, and x/y/w/h are the bounding box around them
+// (kept in sync as the stroke grows). The diamond, triangle, and
+// star are polygons drawn inside the box (see shapePolygonPoints).
+export type ShapeKind = "rect" | "ellipse" | "diamond" | "triangle" | "star" | "line" | "pen";
 
 export interface ShapePoint {
   x: number;
@@ -60,16 +65,76 @@ export const DEFAULT_SHAPE_SIZE = { w: 160, h: 120 } as const;
 // this, a shape is too small to grab or see.
 export const MIN_SHAPE_SIZE = 20;
 
-// The four shape kinds, in toolbar order.
-export const SHAPE_KINDS: ShapeKind[] = ["rect", "ellipse", "line", "pen"];
+// The seven shape kinds, in toolbar order.
+export const SHAPE_KINDS: ShapeKind[] = [
+  "rect",
+  "ellipse",
+  "diamond",
+  "triangle",
+  "star",
+  "line",
+  "pen",
+];
 
 // Reads a shape kind out of untrusted data (a shared document or
 // a stored value). Anything unknown falls back to a rectangle
 // instead of crashing the board.
 export function asShapeKind(value: unknown): ShapeKind {
-  return value === "rect" || value === "ellipse" || value === "line" || value === "pen"
+  return value === "rect" ||
+    value === "ellipse" ||
+    value === "diamond" ||
+    value === "triangle" ||
+    value === "star" ||
+    value === "line" ||
+    value === "pen"
     ? value
     : "rect";
+}
+
+// The polygon outline of a diamond, triangle, or star inside a
+// box of the given size, as points relative to the box's top-left
+// corner. The board draws these as an SVG polygon and the PNG
+// export draws the same points on a canvas, so the two always
+// match. Other kinds are not polygons and return no points.
+export function shapePolygonPoints(kind: ShapeKind, w: number, h: number): ShapePoint[] {
+  if (kind === "diamond") {
+    // The middle of each edge, joined in order.
+    return [
+      { x: w / 2, y: 0 },
+      { x: w, y: h / 2 },
+      { x: w / 2, y: h },
+      { x: 0, y: h / 2 },
+    ];
+  }
+  if (kind === "triangle") {
+    // Apex at the top centre, base along the bottom edge.
+    return [
+      { x: w / 2, y: 0 },
+      { x: w, y: h },
+      { x: 0, y: h },
+    ];
+  }
+  if (kind === "star") {
+    // A five-pointed star: ten points alternating between the
+    // outer radius and the inner radius, starting at the top.
+    // The star is centred in the box and sized by the shorter
+    // side, so it never pokes out of a wide or tall box.
+    const centreX = w / 2;
+    const centreY = h / 2;
+    const outer = Math.min(w, h) / 2;
+    const inner = outer * 0.45;
+    const points: ShapePoint[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const radius = i % 2 === 0 ? outer : inner;
+      const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+      points.push({
+        x: centreX + radius * Math.cos(angle),
+        y: centreY + radius * Math.sin(angle),
+      });
+    }
+    return points;
+  }
+  return [];
 }
 
 // Builds a shape. Pen strokes start with their first point;
@@ -371,27 +436,36 @@ export function boxCentreInFrame(frame: Box, box: Box): boolean {
   );
 }
 
-// One connector on the board: an arrow joining two items. The
-// endpoints are item ids — a note, shape, text box, or frame.
-// The line itself stores no position: its ends are recomputed
-// from the two items every render, so it follows them when
-// either one moves. Deleting either endpoint deletes the
-// connector too.
+// One connector on the board: a line joining two items, usually
+// with an arrowhead at the target end. The endpoints are item
+// ids — a note, shape, text box, or frame. The line itself stores
+// no position: its ends are recomputed from the two items every
+// render, so it follows them when either one moves. Deleting
+// either endpoint deletes the connector too. arrow says whether
+// the arrowhead shows (a plain line joins equals; an arrow shows
+// direction), and label is a short text shown at the line's
+// midpoint — "" for no label.
 export interface Connector {
   id: string;
   fromId: string;
   toId: string;
   color: NoteColor;
+  arrow: boolean;
+  label: string;
 }
 
-// Builds a connector between two items.
+// Builds a connector between two items. New connectors get an
+// arrowhead and no label, like connectors always looked before
+// the two became optional.
 export function createConnector(
   id: string,
   fromId: string,
   toId: string,
   color: NoteColor,
+  arrow = true,
+  label = "",
 ): Connector {
-  return { id, fromId, toId, color };
+  return { id, fromId, toId, color, arrow, label };
 }
 
 // The middle of one edge of a box: top, bottom, left, right.
