@@ -80,6 +80,32 @@ describe("boardExportToJson / parseBoardExport", () => {
     expect(parsed).toEqual(board);
   });
 
+  it("keeps polygon shapes and connector arrowheads and labels", () => {
+    const board = sampleBoard();
+    board.shapes.push(createShape("s4", "diamond", 0, 0, 160, 120, "teal"));
+    board.shapes.push(createShape("s5", "star", 0, 0, 160, 120, "red"));
+    board.connectors.push(createConnector("c3", "n1", "s4", "gray", false, "depends on"));
+    const parsed = parseBoardExport(boardExportToJson(board));
+    expect(parsed).toEqual(board);
+  });
+
+  it("imports an old connector without arrow or label as arrowed and unlabeled", () => {
+    const parsed = parseBoardExport(
+      JSON.stringify({
+        version: 1,
+        exportedAt: "2026-11-12T00:00:00.000Z",
+        boardId: "x",
+        notes: [],
+        shapes: [],
+        texts: [],
+        connectors: [{ id: "c1", fromId: "n1", toId: "n2", color: "green" }],
+      }),
+    );
+    expect(parsed!.connectors).toEqual([
+      { id: "c1", fromId: "n1", toId: "n2", color: "green", arrow: true, label: "" },
+    ]);
+  });
+
   it("rejects bad JSON", () => {
     expect(parseBoardExport("not json {")).toBeNull();
   });

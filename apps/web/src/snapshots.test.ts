@@ -106,7 +106,9 @@ function fullExport(): BoardExport {
       { id: "t1", x: 50, y: 60, w: 240, h: 80, fontSize: "medium", color: "green", text: "hi" },
     ],
     frames: [{ id: "f1", x: 0, y: 0, w: 480, h: 320, color: "pink", title: "Frame" }],
-    connectors: [{ id: "c1", fromId: "n1", toId: "s1", color: "yellow" }],
+    connectors: [
+      { id: "c1", fromId: "n1", toId: "s1", color: "yellow", arrow: true, label: "" },
+    ],
     images: [{ id: "i1", x: 70, y: 80, w: 400, h: 300, dataUrl: TINY_PNG }],
     voiceNotes: [
       { id: "v1", x: 90, y: 100, dataUrl: "data:audio/webm;base64,AAAA", durationSeconds: 8 },

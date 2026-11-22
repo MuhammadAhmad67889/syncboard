@@ -5,6 +5,7 @@ import {
   asShapeKind,
   asTextFontSize,
   connectorEndpoints,
+  shapePolygonPoints,
   type Connector,
   type Frame,
   type ImageItem,
@@ -131,6 +132,11 @@ function parseConnector(value: unknown): Connector | null {
     fromId: asString(value.fromId),
     toId: asString(value.toId),
     color: asNoteColor(value.color),
+    // Exports made before arrowheads and labels existed have no
+    // such fields — those connectors keep their arrowhead and
+    // stay unlabeled, exactly how they always looked.
+    arrow: value.arrow !== false,
+    label: asString(value.label),
   };
 }
 
@@ -523,6 +529,24 @@ function drawShape(ctx: CanvasRenderingContext2D, shape: Shape, offsetX: number,
     drawArrowHead(ctx, x + 2, y + 2, x + shape.w - 2, y + shape.h - 2);
     return;
   }
+  if (shape.kind === "diamond" || shape.kind === "triangle" || shape.kind === "star") {
+    // The same polygon points the board draws as SVG, so the
+    // PNG matches the board.
+    const points = shapePolygonPoints(shape.kind, shape.w, shape.h);
+    if (points.length === 0) return;
+    ctx.beginPath();
+    ctx.moveTo(x + points[0].x, y + points[0].y);
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(x + points[i].x, y + points[i].y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = NOTE_COLORS[shape.color];
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    return;
+  }
   // Pen: a polyline through the stored points.
   if (shape.points.length === 0) return;
   ctx.beginPath();
@@ -593,9 +617,10 @@ function drawFrameTitle(ctx: CanvasRenderingContext2D, frame: Frame, offsetX: nu
 }
 
 // A connector is a line between the nearest edges of its two
-// items, with an arrowhead at the target end. A connector whose
-// endpoint is gone (a stale import) is skipped, not drawn to
-// nowhere.
+// items, with an arrowhead at the target end unless the
+// connector turned it off, and its label (if any) on a small
+// pill at the midpoint. A connector whose endpoint is gone (a
+// stale import) is skipped, not drawn to nowhere.
 function drawConnector(
   ctx: CanvasRenderingContext2D,
   connector: Connector,
@@ -615,7 +640,25 @@ function drawConnector(
   ctx.lineTo(ends.x2 - offsetX, ends.y2 - offsetY);
   ctx.lineWidth = 2.5;
   ctx.stroke();
-  drawArrowHead(ctx, ends.x1 - offsetX, ends.y1 - offsetY, ends.x2 - offsetX, ends.y2 - offsetY);
+  if (connector.arrow) {
+    drawArrowHead(ctx, ends.x1 - offsetX, ends.y1 - offsetY, ends.x2 - offsetX, ends.y2 - offsetY);
+  }
+  if (connector.label) {
+    const midX = (ends.x1 + ends.x2) / 2 - offsetX;
+    const midY = (ends.y1 + ends.y2) / 2 - offsetY;
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    const textWidth = ctx.measureText(connector.label).width;
+    const pillW = textWidth + 16;
+    const pillH = 20;
+    drawRoundRect(ctx, midX - pillW / 2, midY - pillH / 2, pillW, pillH, 10);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = "#0f172a";
+    ctx.fillText(connector.label, midX - textWidth / 2, midY + 1);
+  }
 }
 
 // Loads one image for the PNG export. Null when it cannot be
