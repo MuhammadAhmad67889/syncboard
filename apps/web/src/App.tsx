@@ -34,6 +34,7 @@ import {
   penPathFromPoints,
   remainingDots,
   shapeBoxFromPoints,
+  shapePolygonPoints,
   sortCommentsNewestFirst,
   visibleVotes,
   votesInSession,
@@ -84,8 +85,11 @@ import {
   buildConnectorMap,
   deleteConnectorsReferencing,
   readConnector,
+  setConnectorArrow,
+  setConnectorLabel,
   type ConnectorMap,
 } from "./connectors";
+import { SHORTCUTS } from "./shortcuts";
 import {
   buildImageMap,
   downscaleImage,
@@ -175,6 +179,7 @@ import {
 import { planAutoOrganize } from "./autoOrganize";
 import { buildBoardLink } from "./share";
 import { popIn, settlePop, slideInFromRight, staggerIn } from "./motion";
+import { THEMES, applyTheme, getStoredTheme, type ThemeName } from "./theme";
 
 // The sync server address, from the environment.
 const SYNC_URL = import.meta.env.VITE_SYNC_URL ?? "ws://localhost:1234";
@@ -211,6 +216,9 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: "text", label: "Text" },
   { id: "rect", label: "Rectangle" },
   { id: "ellipse", label: "Ellipse" },
+  { id: "diamond", label: "Diamond" },
+  { id: "triangle", label: "Triangle" },
+  { id: "star", label: "Star" },
   { id: "line", label: "Line" },
   { id: "pen", label: "Pen" },
   { id: "connector", label: "Connector" },
@@ -247,6 +255,21 @@ const TOOL_ICONS: Record<Tool, React.ReactNode> = {
   ellipse: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <ellipse cx="8" cy="8" rx="5.5" ry="4" />
+    </svg>
+  ),
+  diamond: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 2.5 L13.5 8 L8 13.5 L2.5 8 Z" />
+    </svg>
+  ),
+  triangle: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 3 L13.5 12.5 H2.5 Z" />
+    </svg>
+  ),
+  star: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 2.5 L9.8 6.2 L13.8 6.7 L10.9 9.5 L11.6 13.4 L8 11.4 L4.4 13.4 L5.1 9.5 L2.2 6.7 L6.2 6.2 Z" />
     </svg>
   ),
   line: (
@@ -877,6 +900,14 @@ function Board({
   onRenameBoard: (board: BoardMeta, name: string) => Promise<boolean>;
   onDeleteBoard: (board: BoardMeta) => Promise<void>;
 }) {
+  // The active theme. index.html already put the saved theme on
+  // <html> before first paint; this state mirrors it so the picker
+  // shows the right choice, and changing it re-applies + saves.
+  const [theme, setTheme] = useState<ThemeName>(getStoredTheme);
+  const changeTheme = (next: ThemeName) => {
+    setTheme(next);
+    applyTheme(next);
+  };
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [authError, setAuthError] = useState<string | null>(null);
   // The new-board form in the board sidebar: whether it is
@@ -1112,6 +1143,14 @@ function Board({
   const [shareCopied, setShareCopied] = useState(false);
   // Whether the template picker bar is showing under the header.
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  // Whether the keyboard-shortcuts panel is showing.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // The connector label being typed, before it is committed on
+  // blur — the same draft pattern as a frame title.
+  const [connectorLabelDraft, setConnectorLabelDraft] = useState<{
+    id: string;
+    value: string;
+  } | null>(null);
   // Whether the local UndoManager has anything to undo or redo.
   // Updated whenever the undo stack changes.
   const [canUndo, setCanUndo] = useState(false);
@@ -1829,7 +1868,15 @@ function Board({
   function handleEmptyCanvasPress(event: React.PointerEvent<HTMLDivElement>): void {
     // A pinch is in progress: no creation tool starts from a press.
     if (pinchRef.current) return;
-    if (tool === "rect" || tool === "ellipse" || tool === "line" || tool === "pen") {
+    if (
+      tool === "rect" ||
+      tool === "ellipse" ||
+      tool === "diamond" ||
+      tool === "triangle" ||
+      tool === "star" ||
+      tool === "line" ||
+      tool === "pen"
+    ) {
       startDraw(event);
     } else if (tool === "frame") {
       // Dragging empty canvas with the Frame tool draws
@@ -2694,7 +2741,17 @@ function Board({
   // drag starts — and a pen stroke grows live as it is drawn.
   function startDraw(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
-    if (tool !== "rect" && tool !== "ellipse" && tool !== "line" && tool !== "pen") return;
+    if (
+      tool !== "rect" &&
+      tool !== "ellipse" &&
+      tool !== "diamond" &&
+      tool !== "triangle" &&
+      tool !== "star" &&
+      tool !== "line" &&
+      tool !== "pen"
+    ) {
+      return;
+    }
     const point = toBoardCoords(event.clientX, event.clientY);
     const id = createShapeAtPoint(tool, point.x, point.y);
     if (!id) return;
@@ -2847,6 +2904,33 @@ function Board({
     if (!connectorMap) return;
     doc.transact(() => {
       connectorMap.set("color", color);
+    }, localOrigin);
+  }
+
+  // Turns one connector's arrowhead on or off. The change syncs
+  // to every tab like any other edit, and undo reverts it.
+  function toggleConnectorArrow(connectorId: string, arrow: boolean): void {
+    const doc = docRef.current;
+    const connectorsMap = connectorsMapRef.current;
+    if (!doc || !connectorsMap) return;
+    const connectorMap = connectorsMap.get(connectorId);
+    if (!connectorMap) return;
+    doc.transact(() => {
+      setConnectorArrow(connectorMap, arrow);
+    }, localOrigin);
+  }
+
+  // Sets one connector's label — the short text at its midpoint.
+  // An empty label is fine: it just shows nothing. The change
+  // syncs to every tab like any other edit, and undo reverts it.
+  function renameConnectorLabel(connectorId: string, label: string): void {
+    const doc = docRef.current;
+    const connectorsMap = connectorsMapRef.current;
+    if (!doc || !connectorsMap) return;
+    const connectorMap = connectorsMap.get(connectorId);
+    if (!connectorMap) return;
+    doc.transact(() => {
+      setConnectorLabel(connectorMap, label.trim());
     }, localOrigin);
   }
 
@@ -4096,7 +4180,12 @@ function Board({
         setConnectorPendingFromId(null);
         setCommentDraft(null);
         setCommentText("");
+        setShortcutsOpen(false);
         cancelRecording();
+        return;
+      }
+      if (!editingText && !mod && event.key === "?") {
+        setShortcutsOpen((open) => !open);
         return;
       }
       if (mod && !event.shiftKey && key === "z") {
@@ -4483,6 +4572,16 @@ function Board({
         <button
           type="button"
           className="toolbar-button"
+          onClick={() => setShortcutsOpen(!shortcutsOpen)}
+          aria-expanded={shortcutsOpen}
+          aria-label="Keyboard shortcuts"
+          title="Keyboard shortcuts (?)"
+        >
+          ?
+        </button>
+        <button
+          type="button"
+          className="toolbar-button"
           onClick={autoOrganize}
           disabled={organizePlan === null}
           aria-label="Auto-organize"
@@ -4555,6 +4654,21 @@ function Board({
             state, and sign out. It sits at the right of the
             title row; the actions row wraps under it. */}
         <div className="header-account">
+        <label className="theme-picker">
+          <span className="visually-hidden">Theme</span>
+          <select
+            value={theme}
+            onChange={(event) => changeTheme(event.target.value as ThemeName)}
+            aria-label="Theme"
+            title="Choose a theme"
+          >
+            {THEMES.map((option) => (
+              <option key={option.name} value={option.name}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <span className="user-chip">
           <span className="user-dot" style={{ background: user.color }} />
           {user.name}
@@ -4791,6 +4905,34 @@ function Board({
           >
             ×
           </button>
+        </div>
+      )}
+      {/* Keyboard shortcuts: the keys the board actually answers
+          to, in a panel under the header like the templates bar.
+          The "?" key and the header button toggle it; Escape
+          closes it. */}
+      {shortcutsOpen && (
+        <div className="shortcuts-panel" role="group" aria-label="Keyboard shortcuts">
+          <div className="shortcuts-head">
+            <span className="shortcuts-title">Keyboard shortcuts</span>
+            <button
+              type="button"
+              className="shortcuts-close"
+              onClick={() => setShortcutsOpen(false)}
+              aria-label="Close keyboard shortcuts"
+              title="Close keyboard shortcuts"
+            >
+              ×
+            </button>
+          </div>
+          <ul className="shortcuts-list">
+            {SHORTCUTS.map((shortcut) => (
+              <li key={shortcut.keys} className="shortcuts-row">
+                <kbd className="shortcuts-keys">{shortcut.keys}</kbd>
+                <span className="shortcuts-action">{shortcut.action}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       <div className="board-main">
@@ -5232,7 +5374,9 @@ function Board({
                       y2={ends.y2}
                       stroke={stroke}
                       strokeWidth={isSelected ? 4 : 2.5}
-                      markerEnd={`url(#connector-arrow-${connector.color})`}
+                      markerEnd={
+                        connector.arrow ? `url(#connector-arrow-${connector.color})` : undefined
+                      }
                       onPointerDown={(event) => {
                         if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
                         selectConnector(connector.id);
@@ -5242,18 +5386,105 @@ function Board({
                 );
               })}
             </svg>
+            {/* Connector labels sit at each line's midpoint, in
+                the canvas layer, so zoom and pan move them with
+                the line. Clicking one selects its connector; the
+                selected connector's label becomes the input in
+                its toolbar below instead. */}
+            {connectors.map((connector) => {
+              if (!connector.label || selectedConnectorId === connector.id) return null;
+              const from = boxesById.get(connector.fromId);
+              const to = boxesById.get(connector.toId);
+              if (!from || !to) return null;
+              const ends = connectorEndpoints(from, to);
+              return (
+                <button
+                  key={connector.id}
+                  type="button"
+                  className="connector-label"
+                  style={{
+                    left: (ends.x1 + ends.x2) / 2,
+                    top: (ends.y1 + ends.y2) / 2,
+                    borderColor: SHAPE_STROKE_COLORS[connector.color],
+                  }}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    if (event.button !== 0 || tool === "connector" || pinchRef.current) return;
+                    selectConnector(connector.id);
+                  }}
+                  aria-label={`Connector label: ${connector.label}`}
+                  title="Select this connector"
+                >
+                  {connector.label}
+                </button>
+              );
+            })}
             {selectedConnectorMid && selectedConnector && (
-              <button
-                type="button"
-                className="connector-delete"
+              <div
+                className="connector-toolbar"
                 style={{ left: selectedConnectorMid.x, top: selectedConnectorMid.y }}
-                onClick={() => deleteConnector(selectedConnector.id)}
                 onPointerDown={(event) => event.stopPropagation()}
-                aria-label="Delete connector"
-                title="Delete connector (Delete key)"
               >
-                ×
-              </button>
+                <input
+                  className="connector-label-input"
+                  value={
+                    connectorLabelDraft?.id === selectedConnector.id
+                      ? connectorLabelDraft.value
+                      : selectedConnector.label
+                  }
+                  onChange={(event) =>
+                    setConnectorLabelDraft({ id: selectedConnector.id, value: event.target.value })
+                  }
+                  onBlur={() => {
+                    if (connectorLabelDraft?.id === selectedConnector.id) {
+                      renameConnectorLabel(selectedConnector.id, connectorLabelDraft.value);
+                      setConnectorLabelDraft(null);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.currentTarget.blur();
+                    } else if (event.key === "Escape") {
+                      // Cancel the edit, not the label: the draft
+                      // is dropped, so the blur below commits
+                      // nothing.
+                      setConnectorLabelDraft(null);
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="Label"
+                  aria-label="Connector label"
+                  maxLength={60}
+                  size={Math.max(
+                    6,
+                    (connectorLabelDraft?.id === selectedConnector.id
+                      ? connectorLabelDraft.value
+                      : selectedConnector.label
+                    ).length + 1,
+                  )}
+                />
+                <button
+                  type="button"
+                  className="connector-arrow-toggle"
+                  aria-pressed={selectedConnector.arrow}
+                  onClick={() =>
+                    toggleConnectorArrow(selectedConnector.id, !selectedConnector.arrow)
+                  }
+                  aria-label={selectedConnector.arrow ? "Hide arrowhead" : "Show arrowhead"}
+                  title={selectedConnector.arrow ? "Hide arrowhead" : "Show arrowhead"}
+                >
+                  →
+                </button>
+                <button
+                  type="button"
+                  className="connector-delete"
+                  onClick={() => deleteConnector(selectedConnector.id)}
+                  aria-label="Delete connector"
+                  title="Delete connector (Delete key)"
+                >
+                  ×
+                </button>
+              </div>
             )}
             {shapes.map((shape) => {
               const selectors = selectorsByShape.get(shape.id) ?? [];
@@ -5368,6 +5599,28 @@ function Board({
                         strokeWidth="3"
                         fill="none"
                         strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                  {(shape.kind === "diamond" ||
+                    shape.kind === "triangle" ||
+                    shape.kind === "star") && (
+                    <svg
+                      className="shape-svg"
+                      width="100%"
+                      height="100%"
+                      viewBox={`0 0 ${boxW} ${boxH}`}
+                      preserveAspectRatio="none"
+                      aria-hidden="true"
+                    >
+                      <polygon
+                        points={shapePolygonPoints(shape.kind, boxW, boxH)
+                          .map((point) => `${point.x},${point.y}`)
+                          .join(" ")}
+                        fill={NOTE_COLORS[shape.color]}
+                        stroke={stroke}
+                        strokeWidth="2"
                         strokeLinejoin="round"
                       />
                     </svg>
@@ -5924,7 +6177,7 @@ function Board({
                         : item.kind === "note"
                           ? { background: NOTE_COLORS[item.color] }
                           : item.kind === "image"
-                            ? { background: "#94a3b8" }
+                            ? { background: "var(--color-muted)" }
                             : { background: SHAPE_STROKE_COLORS[item.color] }),
                     }}
                   />

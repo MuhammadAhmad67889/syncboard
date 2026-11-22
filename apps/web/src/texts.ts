@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import {
+  NOTE_COLORS,
   asTextFontSize,
   type NoteColor,
   type TextBox,
@@ -17,15 +18,7 @@ function asNumber(value: unknown, fallback: number): number {
 }
 
 function asNoteColor(value: unknown): NoteColor {
-  return typeof value === "string" &&
-    (value === "yellow" ||
-      value === "pink" ||
-      value === "green" ||
-      value === "blue" ||
-      value === "purple" ||
-      value === "orange")
-    ? value
-    : "yellow";
+  return typeof value === "string" && value in NOTE_COLORS ? (value as NoteColor) : "yellow";
 }
 
 // Reads one text box out of the shared document into a plain
@@ -71,6 +64,9 @@ export const TEXT_COLORS: Record<NoteColor, string> = {
   blue: "#1d4ed8",
   purple: "#6d28d9",
   orange: "#c2410c",
+  teal: "#0f766e",
+  red: "#b91c1c",
+  gray: "#4b5563",
 };
 
 // Updates a text box's font size. The caller wraps this in a

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import {
+  NOTE_COLORS,
   asShapeKind,
   createShape,
   flatPoints,
@@ -9,14 +10,18 @@ import {
   penPathFromPoints,
   pointsFromFlat,
   shapeBoxFromPoints,
+  shapePolygonPoints,
   type Shape,
 } from "@syncboard/shared";
 import { appendPenPoint, buildShapeMap, readShape } from "./shapes";
 
 describe("asShapeKind", () => {
-  it("accepts the four known kinds", () => {
+  it("accepts the seven known kinds", () => {
     expect(asShapeKind("rect")).toBe("rect");
     expect(asShapeKind("ellipse")).toBe("ellipse");
+    expect(asShapeKind("diamond")).toBe("diamond");
+    expect(asShapeKind("triangle")).toBe("triangle");
+    expect(asShapeKind("star")).toBe("star");
     expect(asShapeKind("line")).toBe("line");
     expect(asShapeKind("pen")).toBe("pen");
   });
@@ -170,7 +175,7 @@ describe("buildShapeMap / readShape", () => {
   it("falls back to defaults for a malformed shape", () => {
     const doc = new Y.Doc();
     const shapeMap = new Y.Map<unknown>();
-    shapeMap.set("kind", "triangle");
+    shapeMap.set("kind", "hexagon");
     shapeMap.set("x", "not a number");
     doc.transact(() => {
       doc.getMap("shapes").set("bad", shapeMap);
@@ -204,5 +209,88 @@ describe("buildShapeMap / readShape", () => {
       { x: 10, y: 10 },
       { x: 20, y: 5 },
     ]);
+  });
+
+  it("round-trips the polygon kinds and the newer colors", () => {
+    const doc = new Y.Doc();
+    const shapesMap = doc.getMap<Y.Map<unknown>>("shapes");
+    const kinds = ["diamond", "triangle", "star"] as const;
+    const colors = ["teal", "red", "gray"] as const;
+    doc.transact(() => {
+      kinds.forEach((kind, index) => {
+        const shape = createShape(`s${index}`, kind, 10, 20, 160, 120, colors[index]);
+        shapesMap.set(shape.id, buildShapeMap(shape));
+      });
+    });
+    kinds.forEach((kind, index) => {
+      const read = readShape(`s${index}`, shapesMap.get(`s${index}`)!);
+      expect(read.kind).toBe(kind);
+      expect(read.color).toBe(colors[index]);
+    });
+  });
+});
+
+describe("NOTE_COLORS", () => {
+  it("has the nine note colors", () => {
+    expect(Object.keys(NOTE_COLORS)).toEqual([
+      "yellow",
+      "pink",
+      "green",
+      "blue",
+      "purple",
+      "orange",
+      "teal",
+      "red",
+      "gray",
+    ]);
+  });
+});
+
+describe("shapePolygonPoints", () => {
+  it("draws a diamond from the middles of the four edges", () => {
+    expect(shapePolygonPoints("diamond", 100, 80)).toEqual([
+      { x: 50, y: 0 },
+      { x: 100, y: 40 },
+      { x: 50, y: 80 },
+      { x: 0, y: 40 },
+    ]);
+  });
+
+  it("draws a triangle with its apex at the top centre", () => {
+    expect(shapePolygonPoints("triangle", 100, 80)).toEqual([
+      { x: 50, y: 0 },
+      { x: 100, y: 80 },
+      { x: 0, y: 80 },
+    ]);
+  });
+
+  it("draws a ten-point star inside the box, starting at the top", () => {
+    const points = shapePolygonPoints("star", 100, 100);
+    expect(points).toHaveLength(10);
+    expect(points[0].x).toBeCloseTo(50);
+    expect(points[0].y).toBeCloseTo(0);
+    for (const point of points) {
+      expect(point.x).toBeGreaterThanOrEqual(0);
+      expect(point.x).toBeLessThanOrEqual(100);
+      expect(point.y).toBeGreaterThanOrEqual(0);
+      expect(point.y).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it("keeps the star inside a wide box", () => {
+    const points = shapePolygonPoints("star", 200, 60);
+    for (const point of points) {
+      expect(point.x).toBeGreaterThanOrEqual(0);
+      expect(point.x).toBeLessThanOrEqual(200);
+      expect(point.y).toBeGreaterThanOrEqual(0);
+      expect(point.y).toBeLessThanOrEqual(60);
+    }
+  });
+
+  it("returns no points for the non-polygon kinds", () => {
+    expect(shapePolygonPoints("rect", 100, 80)).toEqual([]);
+    expect(shapePolygonPoints("ellipse", 100, 80)).toEqual([]);
+    expect(shapePolygonPoints("line", 100, 80)).toEqual([]);
+    expect(shapePolygonPoints("pen", 100, 80)).toEqual([]);
   });
 });
