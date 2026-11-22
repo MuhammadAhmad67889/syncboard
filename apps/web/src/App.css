@@ -2547,9 +2547,16 @@
     flex: none;
   }
 
-  .voting-status {
-    flex: none;
-    white-space: nowrap;
+  /* The status text wraps inside the row instead of running
+     off the right edge as one long line — "Voting ended. The
+     dots are frozen…" has to be readable without sideways
+     scrolling. It grows to fill the space the controls leave,
+     but never shrinks below a readable width; past that the
+     row scrolls and the controls stay reachable. */
+  .voting-bar .voting-status {
+    flex: 1 1 auto;
+    min-width: min(240px, 70vw);
+    white-space: normal;
   }
 
   .present-title {
@@ -2635,10 +2642,29 @@
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
+    /* Items snap into place as the bar scrolls, so at rest
+       nothing sits half-clipped at the edge — every key and
+       color dot lands fully in view. */
+    scroll-snap-type: x proximity;
+    scroll-padding-inline: var(--space-sm);
   }
 
   .tool-rail::-webkit-scrollbar {
     display: none;
+  }
+
+  .tool-rail > * {
+    scroll-snap-align: start;
+  }
+
+  /* A trailing spacer so the last item can scroll fully into
+     view with breathing room — end padding on a scroll
+     container is clipped in some engines, a flex item never
+     is. */
+  .tool-rail::after {
+    content: "";
+    flex: none;
+    width: var(--space-2xs);
   }
 
   .rail-group-label {
@@ -2678,7 +2704,9 @@
   }
 
   /* Fingers need bigger targets than a mouse: every tappable
-     control grows to 44px, and the color dots to 32px. */
+     control grows to 44px, and the color dots to 32px. The
+     dots snap individually too, so the color row never rests
+     with a dot sliced in half at the screen edge. */
   .toolbar-button {
     min-height: 44px;
   }
@@ -2687,6 +2715,7 @@
     width: 32px;
     height: 32px;
     flex: none;
+    scroll-snap-align: start;
   }
 
   .board-tab-button,

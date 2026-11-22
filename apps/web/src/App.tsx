@@ -143,6 +143,7 @@ import {
   type BoardSnapshotMeta,
 } from "./snapshots";
 import {
+  findTemplateOrigin,
   placeTemplate,
   templateBounds,
   TEMPLATES,
@@ -2429,12 +2430,14 @@ function Board({
     );
   }
 
-  // Inserts a template's frames and notes at the centre of the
-  // visible board, in one transaction — so one undo removes the
-  // whole template. The template is centred on what the user
-  // can see right now, not dropped at the board origin, where
-  // it might sit off-screen. The picker closes once the
-  // template is in.
+  // Inserts a template's frames and notes near the centre of
+  // the visible board, in one transaction — so one undo removes
+  // the whole template. The template is centred on what the
+  // user can see right now, not dropped at the board origin,
+  // where it might sit off-screen; if that spot is already
+  // taken, the template drops below the content in the way
+  // instead of landing on top of it. The picker closes once
+  // the template is in.
   function insertTemplate(template: BoardTemplate): void {
     const doc = docRef.current;
     const notesMap = notesMapRef.current;
@@ -2444,9 +2447,10 @@ function Board({
     const rect = board.getBoundingClientRect();
     const centre = toBoardCoords(rect.left + rect.width / 2, rect.top + rect.height / 2);
     const bounds = templateBounds(template);
-    const originX = Math.max(0, Math.round(centre.x - bounds.w / 2));
-    const originY = Math.max(0, Math.round(centre.y - bounds.h / 2));
-    const placed = placeTemplate(template, originX, originY);
+    const preferredX = Math.max(0, Math.round(centre.x - bounds.w / 2));
+    const preferredY = Math.max(0, Math.round(centre.y - bounds.h / 2));
+    const origin = findTemplateOrigin(template, preferredX, preferredY, contentBoxes);
+    const placed = placeTemplate(template, origin.x, origin.y);
     doc.transact(() => {
       for (const spec of placed.frames) {
         const frame = createFrame(

@@ -8,6 +8,7 @@ import {
   planAutoOrganize,
   titleCaseKeyword,
 } from "./autoOrganize";
+import { boxesOverlap } from "./templates";
 
 function note(overrides: Partial<Note> = {}): Note {
   return {
@@ -247,5 +248,94 @@ describe("planAutoOrganize", () => {
     expect(plan?.frameCount).toBe(1);
     expect(plan?.groups[0].title).toBe("Design");
     expect(plan?.noteCount).toBe(2);
+  });
+
+  it("lays out a clean grid on a messy board: overlapping notes, mixed sizes, existing content", () => {
+    // A frame that already holds two notes — they stay put.
+    const oldFrame = frame({ id: "old", x: 0, y: 0, w: 480, h: 320 });
+    const inFrame = [
+      note({ id: "in1", x: 50, y: 80, w: 200, h: 200, text: "Launch retro notes" }),
+      note({ id: "in2", x: 280, y: 80, w: 150, h: 150, text: "Design tokens" }),
+    ];
+    // Free notes piled on top of each other at mixed sizes.
+    const messy = [
+      note({ id: "l1", x: 600, y: 50, w: 200, h: 200, text: "Launch the landing page" }),
+      note({ id: "l2", x: 650, y: 120, w: 320, h: 180, text: "Launch checklist" }),
+      note({ id: "l3", x: 620, y: 300, w: 150, h: 300, text: "Launch email draft" }),
+      note({ id: "d1", x: 100, y: 500, w: 240, h: 160, text: "Design the settings screen" }),
+      note({ id: "d2", x: 200, y: 550, w: 200, h: 200, text: "Design review" }),
+      note({ id: "d3", x: 450, y: 520, w: 180, h: 240, text: "Design the empty state" }),
+      note({ id: "b1", x: 800, y: 500, w: 200, h: 200, text: "Budget for the venue" }),
+      note({ id: "b2", x: 850, y: 560, w: 260, h: 140, text: "Budget spreadsheet" }),
+      note({ id: "x1", x: 1100, y: 100, w: 200, h: 200, text: "Quantum banana orbit" }),
+      note({ id: "x2", x: 1150, y: 150, w: 200, h: 200, text: "Zebra crossing" }),
+    ];
+    // Shapes already on the board count as content too.
+    const shapeBoxes = [
+      { x: 0, y: 900, w: 300, h: 100 },
+      { x: 1400, y: 0, w: 120, h: 400 },
+    ];
+    const allNotes = [...inFrame, ...messy];
+    const content = [...allNotes, oldFrame, ...shapeBoxes];
+    const plan = planAutoOrganize(allNotes, [oldFrame], content);
+    expect(plan).not.toBeNull();
+    expect(plan?.frameCount).toBe(3);
+    expect(plan?.noteCount).toBe(8);
+    expect(plan?.groups.map((g) => g.title)).toEqual(["Design", "Launch", "Budget"]);
+
+    const notesById = new Map(allNotes.map((n) => [n.id, n]));
+    const placedBoxes = (plan?.groups ?? []).flatMap((group) =>
+      group.placements.map((placement) => {
+        const placed = notesById.get(placement.noteId)!;
+        return { x: placement.x, y: placement.y, w: placed.w, h: placed.h };
+      }),
+    );
+
+    // No two moved notes overlap each other after the move,
+    // whatever sizes they started at.
+    for (let i = 0; i < placedBoxes.length; i += 1) {
+      for (let j = i + 1; j < placedBoxes.length; j += 1) {
+        expect(boxesOverlap(placedBoxes[i], placedBoxes[j])).toBe(false);
+      }
+    }
+
+    // Every moved note lands fully inside its own frame.
+    for (const group of plan?.groups ?? []) {
+      for (const placement of group.placements) {
+        const placed = notesById.get(placement.noteId)!;
+        expect(placement.x).toBeGreaterThanOrEqual(group.frame.x);
+        expect(placement.y).toBeGreaterThanOrEqual(group.frame.y);
+        expect(placement.x + placed.w).toBeLessThanOrEqual(group.frame.x + group.frame.w);
+        expect(placement.y + placed.h).toBeLessThanOrEqual(group.frame.y + group.frame.h);
+      }
+    }
+
+    // The new frames do not overlap each other, the old frame,
+    // the shapes, or any note that stays where it is.
+    const newFrames = (plan?.groups ?? []).map((g) => g.frame);
+    const unmoved = [oldFrame, ...shapeBoxes, ...inFrame, messy[8], messy[9]];
+    for (let i = 0; i < newFrames.length; i += 1) {
+      for (let j = i + 1; j < newFrames.length; j += 1) {
+        expect(boxesOverlap(newFrames[i], newFrames[j])).toBe(false);
+      }
+      for (const box of unmoved) {
+        expect(boxesOverlap(newFrames[i], box)).toBe(false);
+      }
+    }
+
+    // The row of new frames starts below everything that was
+    // already on the board (content bottom is 1000).
+    for (const newFrame of newFrames) {
+      expect(newFrame.y).toBeGreaterThanOrEqual(1000);
+    }
+
+    // Notes already framed and loners are not moved.
+    const placedIds = (plan?.groups ?? []).flatMap((g) =>
+      g.placements.map((p) => p.noteId),
+    );
+    expect(placedIds).not.toContain("in1");
+    expect(placedIds).not.toContain("in2");
+    expect(placedIds).not.toContain("x1");
+    expect(placedIds).not.toContain("x2");
   });
 });
