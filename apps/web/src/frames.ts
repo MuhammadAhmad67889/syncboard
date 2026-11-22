@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import { type Frame, type NoteColor } from "@syncboard/shared";
+import { NOTE_COLORS, type Frame, type NoteColor } from "@syncboard/shared";
 
 // One frame inside the shared document: a Y.Map whose fields are
 // plain values (x, y, w, h, a color name, a title string).
@@ -10,15 +10,7 @@ function asNumber(value: unknown, fallback: number): number {
 }
 
 function asNoteColor(value: unknown): NoteColor {
-  return typeof value === "string" &&
-    (value === "yellow" ||
-      value === "pink" ||
-      value === "green" ||
-      value === "blue" ||
-      value === "purple" ||
-      value === "orange")
-    ? value
-    : "yellow";
+  return typeof value === "string" && value in NOTE_COLORS ? (value as NoteColor) : "yellow";
 }
 
 function asTitle(value: unknown): string {

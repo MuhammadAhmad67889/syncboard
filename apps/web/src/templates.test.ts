@@ -12,17 +12,19 @@ import {
 } from "./templates";
 
 describe("TEMPLATES", () => {
-  it("has the four templates, in picker order", () => {
+  it("has the five templates, in picker order", () => {
     expect(TEMPLATES.map((template) => template.id)).toEqual([
       "kanban",
       "retro",
       "mind-map",
+      "brainstorm",
       "sprint-planning",
     ]);
     expect(TEMPLATES.map((template) => template.name)).toEqual([
       "Kanban board",
       "Retro",
       "Mind map",
+      "Brainstorm",
       "Sprint planning",
     ]);
   });
@@ -75,6 +77,21 @@ describe("TEMPLATES", () => {
       "Add an idea here",
       "Add an idea here",
     ]);
+  });
+
+  it("gives Brainstorm one frame, a central topic, and six idea notes", () => {
+    const brainstorm = templateById("brainstorm")!;
+    expect(brainstorm.frames.map((frame) => frame.title)).toEqual(["Brainstorm"]);
+    expect(brainstorm.notes).toHaveLength(7);
+    expect(brainstorm.notes[0].text).toBe("Add the topic here");
+    expect(
+      brainstorm.notes.slice(1).every((note) => note.text === "Add an idea here"),
+    ).toBe(true);
+    // The topic sits in the middle of the frame.
+    const frame = brainstorm.frames[0];
+    const topic = brainstorm.notes[0];
+    expect(topic.x + topic.w / 2).toBe(frame.x + frame.w / 2);
+    expect(topic.y + topic.h / 2).toBe(frame.y + frame.h / 2);
   });
 
   it("gives Sprint planning a goal frame and three columns", () => {

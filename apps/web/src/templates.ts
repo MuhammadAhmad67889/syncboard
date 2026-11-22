@@ -107,7 +107,7 @@ function threeColumns(
   return { id, name, description, frames, notes };
 }
 
-// The four templates, in picker order.
+// The five templates, in picker order.
 export const TEMPLATES: BoardTemplate[] = [
   threeColumns(
     "kanban",
@@ -142,6 +142,23 @@ export const TEMPLATES: BoardTemplate[] = [
       { text: "Add the main idea here", x: COLUMN_W + COLUMN_GAP + NOTE_INSET_X, y: 180 + NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
       { text: "Add an idea here", x: NOTE_INSET_X, y: 420 + NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
       { text: "Add an idea here", x: RIGHT_X + NOTE_INSET_X, y: 420 + NOTE_INSET_Y, w: NOTE_W, h: NOTE_H, color: "yellow" },
+    ],
+  },
+  {
+    id: "brainstorm",
+    name: "Brainstorm",
+    description: "One topic in the middle, six idea notes around it",
+    frames: [{ title: "Brainstorm", x: 0, y: 0, w: 1008, h: 620, color: "purple" }],
+    notes: [
+      // The topic sits in the middle of the frame; the six idea
+      // notes flank it, three on each side.
+      { text: "Add the topic here", x: 384, y: 230, w: 240, h: 160, color: "purple" },
+      { text: "Add an idea here", x: 40, y: 70, w: NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: 40, y: 250, w: NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: 40, y: 430, w: NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: 768, y: 70, w: NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: 768, y: 250, w: NOTE_W, h: NOTE_H, color: "yellow" },
+      { text: "Add an idea here", x: 768, y: 430, w: NOTE_W, h: NOTE_H, color: "yellow" },
     ],
   },
   // Sprint planning is built from the same column helper as

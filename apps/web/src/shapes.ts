@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import {
+  NOTE_COLORS,
   asShapeKind,
   flatPoints,
   pointsFromFlat,
@@ -26,6 +27,9 @@ export const SHAPE_STROKE_COLORS: Record<NoteColor, string> = {
   blue: "#2563eb",
   purple: "#7c3aed",
   orange: "#ea580c",
+  teal: "#0d9488",
+  red: "#dc2626",
+  gray: "#6b7280",
 };
 
 function asNumber(value: unknown, fallback: number): number {
@@ -33,15 +37,7 @@ function asNumber(value: unknown, fallback: number): number {
 }
 
 function asNoteColor(value: unknown): NoteColor {
-  return typeof value === "string" &&
-    (value === "yellow" ||
-      value === "pink" ||
-      value === "green" ||
-      value === "blue" ||
-      value === "purple" ||
-      value === "orange")
-    ? value
-    : "yellow";
+  return typeof value === "string" && value in NOTE_COLORS ? (value as NoteColor) : "yellow";
 }
 
 // Reads one shape out of the shared document into a plain object

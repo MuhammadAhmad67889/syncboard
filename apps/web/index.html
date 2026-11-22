@@ -2,6 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Apply the saved theme before first paint so there is no flash
+      // of the wrong theme. Keep the names in sync with src/theme.ts.
+      try {
+        var savedTheme = localStorage.getItem("syncboard-theme");
+        if (savedTheme !== "dark" && savedTheme !== "light" && savedTheme !== "dose") {
+          // Older builds used longer names ending in "-dark"/"-light".
+          if (savedTheme && savedTheme.slice(-5) === "-dark") {
+            savedTheme = "dark";
+          } else if (savedTheme && savedTheme.slice(-6) === "-light") {
+            savedTheme = "light";
+          } else {
+            savedTheme = "dark";
+          }
+        }
+        document.documentElement.dataset.theme = savedTheme;
+      } catch (error) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
