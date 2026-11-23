@@ -357,6 +357,509 @@ const ACTION_ICONS = {
   ),
 } as const;
 
+// The shared paper-key button recipe as Tailwind utilities: a
+// paper key with a rule border and ink text (the old
+// .toolbar-button rule from App.css). The header (Phase 1 of
+// the Tailwind migration), the tool rail, the zoom controls,
+// and the new-board form (Phase 3) all build on it, each adding
+// its own size and colours. max-phone: is the phone layout
+// (width <= 768px), matching the old @media (max-width: 48rem)
+// rules.
+const paperKeyClass =
+  "inline-flex items-center gap-xs border rounded-input font-semibold whitespace-nowrap cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-55 [&_svg]:flex-none";
+
+// The resting paper-key colours: paper fill, ink text, the
+// deeper paper on hover and while disabled.
+const paperKeyIdleClass =
+  "border-rule bg-paper text-ink hover:bg-paper-3 disabled:bg-paper-3 disabled:text-muted";
+
+const headerButtonClass = `${paperKeyClass} ${paperKeyIdleClass} justify-center min-h-[34px] px-sm py-2xs text-sm max-phone:min-h-11 max-phone:px-xs max-phone:text-xs`;
+
+// Share is the header's one primary action: the filled accent
+// key instead of a paper key.
+const headerPrimaryButtonClass =
+  "inline-flex items-center justify-center gap-xs min-h-[34px] px-sm py-2xs border border-accent rounded-input bg-accent text-accent-ink text-sm font-semibold whitespace-nowrap cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-accent-deep active:translate-y-px disabled:bg-paper-3 disabled:text-muted disabled:cursor-not-allowed disabled:opacity-55 [&_svg]:flex-none max-phone:min-h-11 max-phone:px-xs max-phone:text-xs";
+
+// The connection status pill's colours per state. The word
+// itself carries the meaning, never colour alone.
+const statusClasses: Record<ConnectionStatus, string> = {
+  connected: "bg-accent-soft text-accent-deep",
+  connecting: "bg-paper-3 text-ink-2",
+  disconnected: "bg-paper-3 text-muted",
+};
+
+// Phase 2 of the Tailwind migration: the bars under the header
+// (voting, present, templates) share one container recipe and
+// one pill-button recipe, as utilities. They replicate the old
+// .voting-bar / .present-bar / .templates-bar rules from
+// App.css, including the phone layout: one scrollable row, no
+// wrapping, hidden scrollbar, 40px touch targets.
+const barClass =
+  "flex flex-wrap items-center gap-x-sm gap-y-xs px-md py-xs border-b border-rule bg-paper-2 text-sm max-phone:flex-nowrap max-phone:overflow-x-auto max-phone:px-sm max-phone:py-2xs max-phone:[scrollbar-width:none] max-phone:[&::-webkit-scrollbar]:hidden";
+
+const barButtonClass =
+  "px-sm py-3xs border border-rule rounded-pill bg-paper text-ink-2 font-semibold cursor-pointer disabled:bg-paper-3 disabled:text-muted disabled:cursor-default enabled:hover:bg-accent-soft max-phone:flex-none max-phone:min-h-10 max-phone:whitespace-nowrap";
+
+// The status line in the voting bar. On a phone it wraps inside
+// the row instead of running off the right edge as one long
+// line, growing to fill the space the controls leave.
+const votingStatusClass =
+  "font-semibold text-ink-2 tabular-nums max-phone:flex-auto max-phone:min-w-[min(240px,70vw)] max-phone:whitespace-normal";
+
+const dotsLabelClass =
+  "flex items-center gap-2xs font-semibold text-ink-2 max-phone:flex-none max-phone:whitespace-nowrap";
+
+const dotsSelectClass =
+  "px-2xs py-3xs border border-muted rounded-input bg-paper text-ink font-semibold max-phone:min-h-10";
+
+// Phase 3 of the Tailwind migration: the tool rail, zoom
+// controls, minimap, and new-board form. The rail is a vertical
+// strip of paper keys on desktop; on a phone it becomes a
+// bottom toolbar: one horizontally scrollable row of 44px icon
+// keys with the safe-area inset honoured, items snapping into
+// place so nothing rests half-clipped at the edge.
+const toolRailClass =
+  "flex flex-none flex-col gap-sm p-sm border-r border-rule bg-paper-2 overflow-y-auto max-phone:order-2 max-phone:flex-row max-phone:items-center max-phone:gap-xs max-phone:pt-xs max-phone:[padding-bottom:calc(var(--space-xs)+env(safe-area-inset-bottom,0px))] max-phone:border-r-0 max-phone:border-t max-phone:overflow-x-auto max-phone:overflow-y-hidden max-phone:[scrollbar-width:none] max-phone:[&::-webkit-scrollbar]:hidden max-phone:snap-x max-phone:snap-proximity max-phone:scroll-px-sm max-phone:[&>*]:snap-start max-phone:after:content-[''] max-phone:after:flex-none max-phone:after:w-2xs";
+
+// The micro label above each rail group (Add, Tools, Color,
+// Text, History): a mono figure-style caption, so the rail
+// scans in sections instead of one long run of keys. Hidden on
+// a phone, where the icons carry it.
+const railGroupLabelClass =
+  "px-2xs font-outlier text-xs font-medium tracking-[0.08em] uppercase text-muted max-phone:hidden";
+
+// In the rail the dividers run across, between the groups; in
+// the phone toolbar they stand upright again.
+const railDividerClass = "h-px flex-none bg-rule max-phone:h-lg max-phone:w-px";
+
+// Rail keys stretch the rail's width, icon on the left, label
+// beside it. On a phone they are 44px icon keys, centred.
+const railButtonSizeClass =
+  "min-h-9 px-md py-xs w-full justify-start max-phone:w-auto max-phone:flex-none max-phone:justify-center max-phone:min-w-11 max-phone:min-h-11 max-phone:p-xs";
+
+const railButtonClass = `${paperKeyClass} ${paperKeyIdleClass} ${railButtonSizeClass}`;
+
+// The active tool is the filled accent key, not a paper key.
+const railButtonActiveClass = `${paperKeyClass} border-accent bg-accent text-accent-ink hover:bg-accent disabled:bg-accent disabled:text-accent-ink ${railButtonSizeClass}`;
+
+// In the rail the tool and font-size groups run down, not
+// across; on a phone they join the toolbar row.
+const railPickerClass =
+  "flex flex-col items-stretch flex-wrap gap-2xs max-phone:flex-row max-phone:items-center max-phone:flex-none";
+
+// The color dots sit three to a row in the rail, so the row
+// never sets the rail's width — the tool buttons do.
+const colorPickerClass =
+  "grid grid-cols-[repeat(3,auto)] justify-start items-center gap-xs max-phone:flex max-phone:flex-nowrap max-phone:flex-none";
+
+const colorDotClass =
+  "size-lg p-0 border border-[color-mix(in_oklab,var(--color-ink)_20%,transparent)] rounded-full cursor-pointer focus-visible:outline-offset-4 max-phone:size-8 max-phone:flex-none max-phone:snap-start";
+
+const colorDotActiveClass = `${colorDotClass} outline-2 outline-solid outline-accent outline-offset-2`;
+
+// The font-size keys are centred single letters; the active
+// size is a quieter selection than the active tool: an accent
+// border and deep accent text on the deeper paper, not a
+// second filled key.
+const fontSizeButtonSizeClass =
+  "min-h-9 min-w-10 p-xs text-center w-full justify-start max-phone:w-auto max-phone:flex-none max-phone:justify-center max-phone:min-w-11 max-phone:min-h-11";
+
+const fontSizeButtonClass = `${paperKeyClass} ${paperKeyIdleClass} ${fontSizeButtonSizeClass}`;
+
+const fontSizeButtonActiveClass = `${paperKeyClass} border-accent bg-paper-3 text-accent-deep hover:bg-paper-3 disabled:bg-paper-3 disabled:text-accent-deep ${fontSizeButtonSizeClass}`;
+
+// The corner stack floats on the board, bottom-right: the
+// minimap above the zoom controls, right-aligned.
+const boardCornerClass =
+  "absolute right-md bottom-md z-10 flex flex-col items-end gap-xs max-phone:right-sm max-phone:bottom-sm";
+
+// Zoom is a paper key on the board, with a defined edge rather
+// than a shadow. On a phone the pill never wraps into a
+// stacked box: minus, figure, plus, and Reset stay on one line.
+const zoomControlsClass =
+  "flex flex-wrap items-center gap-2xs p-2xs border border-rule rounded-input bg-paper max-phone:flex-nowrap";
+
+const zoomButtonClass = `${paperKeyClass} ${paperKeyIdleClass} justify-center min-h-9 min-w-10 p-xs text-center max-phone:min-h-11`;
+
+const resetButtonClass = `${paperKeyClass} ${paperKeyIdleClass} justify-center min-h-9 px-md py-xs max-phone:min-h-11`;
+
+// The zoom figure is the one place the mono face appears: it
+// is a measurement, not a label.
+const zoomLabelClass =
+  "min-w-10 text-center font-outlier text-sm font-medium tabular-nums text-ink-2 whitespace-nowrap max-phone:min-w-6";
+
+// The minimap: a small paper overview of the board. Clicking
+// or dragging it pans the canvas, so it reads as grabbable. On
+// a phone it is hidden: at 180px wide it would cover a third
+// of the board, and the zoom controls stay so the view is
+// still adjustable.
+const minimapClass =
+  "relative w-[180px] h-[120px] overflow-hidden border border-rule rounded-card bg-paper cursor-grab touch-none active:cursor-grabbing max-phone:hidden";
+
+// The new-board form in the boards panel: the input takes the
+// row and the buttons sit under it.
+const boardNewFormClass = "flex items-center gap-xs flex-wrap";
+
+const boardNewInputClass =
+  "min-h-9 px-sm py-xs border border-muted rounded-input bg-paper text-ink outline-2 outline-solid outline-transparent -outline-offset-2 flex-1 min-w-0 focus-visible:border-ink-2 focus-visible:outline-focus";
+
+const boardNewButtonClass = `${paperKeyClass} ${paperKeyIdleClass} justify-center min-h-9 px-md py-xs`;
+
+// Phase 4 of the Tailwind migration: the side panels (boards,
+// comments, snapshots) and their shared chrome. On desktop the
+// panels are columns beside the board; on a phone they become
+// overlay drawers above a tap-to-close backdrop, and collapsed
+// they are just a floating toggle at the screen edge. The
+// collapsed variants are separate full class strings, like the
+// rail's active key, so no two utilities ever fight over the
+// same property.
+
+// The tap-to-close backdrop behind the phone panel drawers.
+// Desktop panels sit in the flow, so it never shows there.
+const panelBackdropClass =
+  "hidden max-phone:block max-phone:absolute max-phone:inset-0 max-phone:z-[15] max-phone:p-0 max-phone:border-0 max-phone:bg-[color-mix(in_oklab,var(--color-band)_45%,transparent)] max-phone:cursor-pointer";
+
+// The collapse toggle shared by all three panels: a small
+// paper key with the chevron. On a phone it is a 44px touch
+// target.
+const panelToggleClass =
+  "inline-flex items-center justify-center min-w-9 min-h-9 p-0 border border-rule rounded-input bg-paper text-ink text-md leading-none cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-paper-3 active:translate-y-px max-phone:min-h-11";
+
+// The panel head row: the title and the toggle. The comments
+// and snapshots heads carry a hairline under them; collapsed,
+// the head is only the toggle, so the hairline goes too.
+const panelHeadClass = "flex items-center justify-between gap-xs";
+const panelHeadRuledClass = "flex items-center justify-between gap-xs pb-xs border-b border-rule";
+
+// The panel title. Collapsed, it hides — it is nowrap, so left
+// showing it would set the collapsed strip's width.
+const panelTitleClass = "font-semibold whitespace-nowrap";
+
+// The boards sidebar: a column of board tabs, left of the
+// rail. On a phone it slides over the board from the left;
+// collapsed, it is just its toggle floating at the top-left.
+const boardSidebarClass =
+  "flex flex-none flex-col gap-sm w-[216px] p-sm border-r border-rule bg-paper-2 overflow-y-auto max-phone:absolute max-phone:left-0 max-phone:top-0 max-phone:bottom-0 max-phone:z-20 max-phone:w-[min(300px,85vw)] max-phone:shadow-lift";
+
+const boardSidebarCollapsedClass =
+  "flex flex-none flex-col gap-sm w-auto p-xs border-r border-rule bg-paper-2 overflow-y-auto max-phone:absolute max-phone:left-0 max-phone:top-0 max-phone:z-[12] max-phone:p-2xs max-phone:border-r-0 max-phone:bg-transparent max-phone:shadow-none";
+
+// The board list is a plain list — the tabs carry the look.
+const boardListClass = "flex flex-col gap-xs m-0 p-0 list-none";
+
+// Board tabs are plastic keys; the open one is the accent key.
+// In the sidebar they stretch the panel's width, and the name
+// takes the free space so long names ellipsize instead of
+// pushing the rename and delete keys off the edge.
+const boardTabClass =
+  "flex items-center w-full border border-rule rounded-pill bg-paper overflow-hidden";
+const boardTabActiveClass =
+  "flex items-center w-full border border-accent rounded-pill bg-accent overflow-hidden";
+
+const boardTabButtonClass =
+  "flex-1 min-w-0 min-h-9 px-sm py-xs border-0 bg-transparent text-ink font-semibold whitespace-nowrap overflow-hidden text-ellipsis text-left cursor-pointer max-phone:min-h-11";
+const boardTabButtonActiveClass =
+  "flex-1 min-w-0 min-h-9 px-sm py-xs border-0 bg-transparent text-accent-ink font-semibold whitespace-nowrap overflow-hidden text-ellipsis text-left cursor-pointer max-phone:min-h-11";
+
+const boardTabRenameClass =
+  "min-h-9 px-2xs py-0 border-0 bg-transparent text-muted text-sm font-semibold whitespace-nowrap cursor-pointer max-phone:min-h-11";
+const boardTabRenameActiveClass =
+  "min-h-9 px-2xs py-0 border-0 bg-transparent text-accent-ink text-sm font-semibold whitespace-nowrap cursor-pointer max-phone:min-h-11";
+
+const boardTabDeleteClass =
+  "inline-flex items-center justify-center min-w-9 min-h-9 p-0 border-0 bg-transparent text-muted text-md leading-none cursor-pointer max-phone:min-h-11";
+const boardTabDeleteActiveClass =
+  "inline-flex items-center justify-center min-w-9 min-h-9 p-0 border-0 bg-transparent text-accent-ink text-md leading-none cursor-pointer max-phone:min-h-11";
+
+// The rename form edits the name in place, so the input looks
+// like the name itself — no border, no fill, just the text,
+// with a focus outline. Save is an outline button (the accent
+// border marks the one action that commits); Cancel is a bare
+// text button.
+const boardRenameFormClass = "flex items-center gap-xs flex-1 min-w-0 p-xs";
+
+const boardRenameInputClass =
+  "flex-1 min-w-0 min-h-7 px-xs py-0 border-0 rounded-pill bg-transparent text-ink font-semibold outline-2 outline-solid outline-transparent focus-visible:outline-focus";
+
+const boardRenameSaveClass =
+  "min-h-9 px-md py-xs border border-accent rounded-input bg-transparent text-ink font-semibold whitespace-nowrap cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] disabled:border-rule disabled:bg-paper-3 disabled:text-muted disabled:cursor-not-allowed disabled:opacity-55";
+
+const boardRenameCancelClass =
+  "min-h-9 px-xs py-0 border-0 bg-transparent text-muted font-semibold whitespace-nowrap cursor-pointer";
+
+// The dashed "new board" pill at the foot of the sidebar.
+const boardNewDashedButtonClass =
+  "w-full min-h-9 px-sm py-xs border border-dashed border-muted rounded-pill bg-transparent text-ink font-semibold whitespace-nowrap cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-paper-3 active:translate-y-px";
+
+// The boards load error reads as plain text in the panel, not
+// as a banner — the sidebar is already a bordered panel.
+const boardSidebarErrorClass = "m-0 p-0 border-0 bg-transparent text-error text-sm font-semibold";
+
+// The comments panel: a paper card column right of the board.
+// On a phone it slides over the board from the right;
+// collapsed, it is just its toggle at the top-right corner.
+const commentsPanelClass =
+  "flex flex-none flex-col gap-sm w-[260px] p-sm border-l border-rule bg-paper-2 overflow-y-auto max-phone:absolute max-phone:right-0 max-phone:top-0 max-phone:bottom-0 max-phone:z-20 max-phone:w-[min(320px,88vw)] max-phone:shadow-lift";
+
+const commentsPanelCollapsedClass =
+  "flex flex-none flex-col gap-sm w-auto p-xs border-l border-rule bg-paper-2 overflow-y-auto max-phone:absolute max-phone:right-0 max-phone:top-0 max-phone:z-[12] max-phone:p-2xs max-phone:border-l-0 max-phone:bg-transparent max-phone:shadow-none";
+
+// The snapshots panel, beside the comments panel: the same
+// shape, so the two read as one family. On a phone it floats
+// above the comments panel (z-21) when both are open, since
+// it is the one the user just opened; collapsed, its toggle
+// floats below the comments toggle so the two never overlap.
+const snapshotsPanelClass =
+  "flex flex-none flex-col gap-sm w-[260px] p-sm border-l border-rule bg-paper-2 overflow-y-auto max-phone:absolute max-phone:right-0 max-phone:top-0 max-phone:bottom-0 max-phone:z-[21] max-phone:w-[min(320px,88vw)] max-phone:shadow-lift";
+
+const snapshotsPanelCollapsedClass =
+  "flex flex-none flex-col gap-sm w-auto p-xs border-l border-rule bg-paper-2 overflow-y-auto max-phone:absolute max-phone:right-0 max-phone:top-[calc(var(--space-2xs)_+_48px)] max-phone:z-[12] max-phone:p-2xs max-phone:border-l-0 max-phone:bg-transparent max-phone:shadow-none";
+
+// The panels' empty state is a dashed card, so "nothing here
+// yet" reads as a place waiting for content, not stray text.
+const panelEmptyClass = "m-0 p-sm border border-dashed border-muted rounded-card text-sm text-muted";
+
+// The composer is a paper card at the top of the panel: a
+// label, a field, and the actions under it.
+const panelComposerClass = "grid gap-xs p-sm border border-rule rounded-card bg-paper";
+
+const panelComposerLabelClass = "text-sm font-semibold text-ink-2";
+
+const commentTextareaClass =
+  "min-h-[72px] px-sm py-xs border border-muted rounded-input bg-paper text-ink text-sm leading-[1.4] resize-y outline-2 outline-solid outline-transparent -outline-offset-2 focus-visible:border-ink-2 focus-visible:outline-focus";
+
+const snapshotNameInputClass =
+  "min-h-8 px-sm py-xs border border-muted rounded-input bg-paper text-ink text-sm outline-2 outline-solid outline-transparent -outline-offset-2 focus-visible:border-ink-2 focus-visible:outline-focus";
+
+const panelActionsClass = "flex gap-xs";
+
+// The small keys in the composers and under each thread or
+// snapshot: pills, not the toolbar's input-radius keys, so
+// they read as inline actions rather than toolbar buttons. A
+// disabled key changes in four channels at once — fill, ink,
+// cursor, opacity — like every other disabled button.
+const panelPillButtonClass =
+  "min-h-8 px-xs py-2xs border border-rule rounded-pill bg-paper text-ink-2 text-sm font-semibold cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out)] hover:bg-paper-3 disabled:text-muted disabled:cursor-not-allowed disabled:opacity-55";
+
+// The thread and snapshot lists are plain lists — the rows
+// carry the look.
+const panelListClass = "flex flex-col gap-xs m-0 p-0 list-none";
+
+// One comment thread: author and time on top, the text, then
+// Resolve and Delete. The selected one gets the accent border
+// to match its pin; a resolved one reads quieter (the
+// opacity-65 utility appended where it renders).
+const commentThreadClass = "grid gap-2xs p-sm border border-rule rounded-card bg-paper cursor-pointer";
+const commentThreadSelectedClass =
+  "grid gap-2xs p-sm border border-accent rounded-card bg-paper cursor-pointer shadow-[0_0_0_1px_var(--color-accent)]";
+
+const commentThreadHeadClass = "flex items-baseline justify-between gap-xs";
+
+// The time beside an author or a snapshot name: small tabular
+// figures, never wrapping.
+const panelTimeClass = "text-xs tabular-nums text-muted whitespace-nowrap";
+
+const commentTextClass = "m-0 text-sm leading-[1.4] [overflow-wrap:anywhere] whitespace-pre-wrap";
+
+// One snapshot: name and time stacked — a snapshot name can be
+// long, and side by side with the time it wraps badly. Then
+// what it holds, then Restore and Delete.
+const snapshotRowClass = "grid gap-2xs p-sm border border-rule rounded-card bg-paper";
+
+const snapshotRowHeadClass = "flex flex-col items-start gap-0";
+
+const snapshotNameClass = "font-semibold [overflow-wrap:anywhere]";
+
+const snapshotCountsClass = "m-0 text-sm text-muted leading-[1.4]";
+
+// A comment pin on the canvas: a round accent key with a
+// speech bubble, sitting above the spot it marks. The draft
+// pin is a dashed paper key instead — it is not a thread yet,
+// and it never blocks a click on the board.
+const commentPinClass =
+  "absolute z-[6] flex items-center justify-center size-7 p-0 border-2 border-paper rounded-full bg-accent text-accent-ink cursor-pointer -translate-x-1/2 -translate-y-full";
+
+const commentPinSelectedClass = `${commentPinClass} shadow-[0_0_0_2px_var(--color-focus)]`;
+
+const commentPinDraftClass =
+  "absolute z-[6] flex items-center justify-center size-7 p-0 border-2 border-dashed border-paper rounded-full bg-paper-3 text-ink-2 cursor-pointer pointer-events-none -translate-x-1/2 -translate-y-full";
+
+// Phase 5 of the Tailwind migration: the board itself and
+// everything on it. Position, size, and per-item colours stay
+// inline styles (they come from the shared document); only the
+// fixed styling moves to utilities. The board's ground (paper
+// grain, or the dot grid in Dark/Light) is the board-ground
+// utility in tailwind.css, and the two animations are the
+// animate-* mappings there.
+
+// The page shell: header, bars, and board stacked to the full
+// viewport height. dvh, so a phone's collapsing browser chrome
+// never clips the bottom toolbar.
+const boardPageClass = "flex flex-col h-dvh";
+
+// A short note under the header (board deleted, import done,
+// connector started). It slides down a touch as it appears, so
+// the eye catches the new line.
+const boardNoticeClass =
+  "m-0 px-md py-xs border-b border-rule bg-paper-3 text-ink-2 text-sm font-semibold animate-board-notice-in max-phone:px-sm max-phone:py-2xs";
+
+const boardNoticeButtonClass =
+  "ml-xs px-xs py-3xs border border-rule rounded-input bg-paper text-ink-2 font-semibold cursor-pointer hover:bg-paper-2";
+
+// The vote count badge on an item, half outside its top-right
+// corner like a badge. It never takes clicks, so voting on a
+// badged item still works.
+const voteBadgeClass =
+  "absolute -top-[10px] -right-[10px] z-[5] flex items-center justify-center min-w-[22px] h-[22px] px-2xs border-2 border-paper rounded-pill bg-accent text-accent-ink text-xs font-bold tabular-nums pointer-events-none shadow-card";
+
+// The row under the header: panels, rail, and board. On a
+// phone it stacks — canvas on top, tools along the bottom.
+const boardMainClass = "relative flex flex-1 min-h-0 max-phone:flex-col";
+
+// The board viewport. Dragging empty canvas pans, so it reads
+// as grabbable; the cursor itself is picked in the JSX (grab,
+// grabbing while panning, crosshair with a drawing tool).
+const boardClass =
+  "board-ground relative flex-1 overflow-hidden bg-paper touch-none max-phone:order-1 max-phone:min-h-0";
+
+// The transformed layer that holds the items. Pan and zoom
+// move this layer; the board element is the fixed viewport.
+const boardCanvasClass = "absolute inset-0 origin-top-left";
+
+// The empty state sits on the viewport, not the canvas layer,
+// so it stays centred at any pan or zoom. It never blocks a
+// click on the board.
+const boardEmptyClass =
+  "absolute inset-0 grid place-content-center gap-2xs p-md text-center pointer-events-none";
+
+const boardEmptyTitleClass = "font-display text-lg font-bold tracking-display text-ink";
+
+const boardEmptyLineClass = "text-muted text-sm";
+
+// A remote collaborator's cursor. Decoration only — it must
+// never block clicks.
+const remoteCursorClass = "absolute z-10 flex items-start pointer-events-none";
+
+const remoteCursorNameClass =
+  "ml-3xs px-xs py-3xs rounded-pill text-band-ink text-xs font-semibold whitespace-nowrap";
+
+// The label naming who selected an item, floating above its
+// top edge in the selector's colour (the colour is inline).
+const itemSelectorClass =
+  "absolute left-0 z-[5] px-xs py-3xs rounded-pill text-band-ink text-xs font-semibold whitespace-nowrap pointer-events-none [top:calc(-1*(var(--space-lg)_+_var(--space-3xs)))]";
+
+// A shape's box. The box grabs for dragging; the SVG inside is
+// decoration and never blocks the press on the shape itself.
+const shapeClass = "absolute cursor-grab touch-none active:cursor-grabbing";
+
+const shapeSvgClass = "absolute inset-0 block pointer-events-none";
+
+// An uploaded picture. The picture itself never takes the
+// pointer — the box does, so dragging works and the browser's
+// own image drag never fights it.
+const imageItemClass = "absolute cursor-grab touch-none active:cursor-grabbing";
+
+const imageItemImgClass = "block w-full h-full object-fill pointer-events-none rounded-input";
+
+// A voice note pin: a fixed-size paper chip with a play button
+// and its duration. The pin grabs for dragging; the play
+// button stops the press, so playing never starts a drag.
+const voiceNoteBaseClass =
+  "absolute w-[72px] h-[72px] flex flex-col items-center justify-center gap-[2px] bg-paper border rounded-input shadow-card cursor-grab touch-none active:cursor-grabbing";
+
+const voiceNoteClass = `${voiceNoteBaseClass} border-rule`;
+
+// A recording in progress: the same pin with an error-coloured
+// border, a pulsing red dot, and a running timer.
+const voiceNoteRecordingClass = `${voiceNoteBaseClass} border-error`;
+
+const voicePlayClass =
+  "flex items-center justify-center w-8 h-8 p-0 border-0 rounded-full bg-accent text-accent-ink text-[13px] leading-none cursor-pointer";
+
+const voiceDurationClass = "font-outlier text-sm text-muted leading-none";
+
+const voiceRecDotClass =
+  "w-3 h-3 rounded-full bg-error animate-voice-rec-pulse motion-reduce:animate-none";
+
+const voiceStopClass =
+  "px-sm py-2xs border-0 rounded-input bg-accent text-accent-ink text-sm font-semibold cursor-pointer";
+
+// A named section on the board. The fill stays paper — the
+// frame's colour shows in its border (inline) and title pill.
+const frameClass = "absolute bg-paper rounded-input cursor-grab touch-none active:cursor-grabbing";
+
+// The frame title: an input that reads as a label, in the mono
+// face. It only looks like a field while the user is typing.
+const frameTitleClass =
+  "absolute px-xs py-2xs border-0 rounded-pill outline-0 text-ink font-outlier text-sm font-medium whitespace-nowrap focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-focus focus-visible:outline-offset-1";
+
+// One overlay SVG for every connector, between the frames and
+// the items. It never blocks clicks on empty board — only the
+// lines themselves are clickable — and it is not clipped, so
+// a line to an off-screen item still draws.
+const connectorSvgClass = "absolute inset-0 w-full h-full overflow-visible pointer-events-none";
+
+const connectorLineClass = "[pointer-events:stroke] cursor-pointer";
+
+// The invisible wide hit area around a connector line, so the
+// thin line is easy to grab.
+const connectorHitClass = "[stroke:transparent] [stroke-width:14] [pointer-events:stroke]";
+
+// A connector's label pill at the line's midpoint, in the
+// connector's colour (the border colour is inline). Clicking
+// it selects the connector.
+const connectorLabelClass =
+  "absolute z-[5] px-xs py-3xs border-[1.5px] border-rule rounded-pill bg-paper text-ink text-xs font-semibold whitespace-nowrap cursor-pointer -translate-x-1/2 -translate-y-1/2";
+
+// The selected connector's toolbar at the line's midpoint: the
+// label input, the arrowhead toggle, and the delete button.
+const connectorToolbarClass =
+  "absolute z-[6] flex items-center gap-2xs p-3xs border border-rule rounded-pill bg-paper shadow-card -translate-x-1/2 -translate-y-1/2";
+
+const connectorLabelInputClass =
+  "px-xs py-3xs border-0 rounded-pill outline-0 bg-paper-2 text-ink text-xs font-semibold focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-focus focus-visible:outline-offset-1";
+
+// The arrowhead toggle: pressed means the arrowhead shows.
+const connectorArrowToggleClass =
+  "flex items-center justify-center w-lg h-lg p-0 border-0 rounded-full bg-transparent text-muted text-md leading-none cursor-pointer aria-pressed:bg-accent-soft aria-pressed:text-accent-deep";
+
+// The round delete key in the connector toolbar. The same key
+// as a selected item's delete button, sitting in the row.
+const connectorDeleteClass =
+  "z-[6] flex items-center justify-center w-lg h-lg p-0 border-0 rounded-full bg-[color-mix(in_oklab,var(--color-paper)_85%,transparent)] text-error text-md leading-none cursor-pointer hover:bg-paper";
+
+// A sticky note. Its colour is inline; while its text is being
+// typed in, the focus ring shows on top of the usual shadow.
+const noteClass =
+  "absolute flex flex-col rounded-input shadow-card focus-within:shadow-[0_0_0_2px_var(--color-focus),var(--shadow-card)]";
+
+// The top strip is the drag handle — grabbing it moves the note.
+const noteHandleClass = "h-lg flex-none cursor-grab touch-none active:cursor-grabbing";
+
+const noteTextClass =
+  "flex-1 min-h-0 px-sm pt-2xs pb-sm border-0 outline-0 resize-none overflow-hidden bg-transparent text-on-note text-md leading-[1.4]";
+
+// The round delete key on a selected item (note, shape, image,
+// voice note, text box, frame), pinned to its top-right.
+const itemDeleteClass =
+  "absolute top-2xs right-2xs z-[6] flex items-center justify-center w-lg h-lg p-0 border-0 rounded-full bg-[color-mix(in_oklab,var(--color-paper)_85%,transparent)] text-error text-md leading-none cursor-pointer hover:bg-paper";
+
+// The resize grip, bottom-right of a selected item.
+const itemResizeClass =
+  "absolute right-0 bottom-0 z-[6] w-md h-md rounded-tl-[var(--space-2xs)] rounded-br-input bg-[color-mix(in_oklab,var(--color-ink)_18%,transparent)] cursor-nwse-resize touch-none";
+
+// A text box: just text on the board, in the picked colour
+// (inline), with no background of its own. While typing, a
+// faint accent tint and the focus ring show.
+const textBoxClass =
+  "absolute flex flex-col rounded-[var(--space-2xs)] focus-within:bg-[color-mix(in_oklab,var(--color-accent)_6%,transparent)] focus-within:shadow-[0_0_0_2px_var(--color-focus)]";
+
+// The top strip is the drag handle — grabbing it moves the box.
+const textHandleClass = "h-md flex-none cursor-grab touch-none active:cursor-grabbing";
+
+const textBoxTextClass =
+  "flex-1 min-h-0 px-2xs pt-0 pb-2xs border-0 outline-0 resize-none overflow-hidden bg-transparent text-inherit leading-[1.4]";
+
 // Throttle: about 30 cursor updates per second. Pointermove
 // fires far more often than that, and every update is a message
 // to the server.
@@ -635,9 +1138,9 @@ export default function App() {
 
   if (!session) {
     return (
-      <main className="picker" ref={pickerRef}>
-        <h1 data-entrance>SyncBoard</h1>
-        <p className="picker-tagline" data-entrance>
+      <main className="grid gap-md place-content-center min-h-dvh p-lg text-center max-phone:gap-sm max-phone:p-md" ref={pickerRef}>
+        <h1 className="text-3xl max-phone:text-2xl" data-entrance>SyncBoard</h1>
+        <p className="text-ink-2 font-medium tracking-[0.01em]" data-entrance>
           Real-time collaborative whiteboard
         </p>
         <p data-entrance>
@@ -645,11 +1148,11 @@ export default function App() {
             ? "Log in to join the board."
             : "Create an account to join the board."}
         </p>
-        <form className="picker-form" data-entrance onSubmit={(event) => void submitAuth(event)}>
-          <label className="picker-field">
+        <form className="grid gap-sm w-[min(320px,100%)] justify-self-center p-lg border border-rule rounded-card bg-paper shadow-card" data-entrance onSubmit={(event) => void submitAuth(event)}>
+          <label className="grid gap-2xs text-left text-sm font-semibold text-ink-2">
             Username
             <input
-              className="picker-input"
+              className="min-h-11 px-sm py-xs border border-muted rounded-input bg-paper-2 text-ink outline-2 outline-transparent -outline-offset-2 hover:bg-paper-3 focus-visible:border-ink-2 focus-visible:outline-focus"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               autoComplete="username"
@@ -657,10 +1160,10 @@ export default function App() {
               autoFocus
             />
           </label>
-          <label className="picker-field">
+          <label className="grid gap-2xs text-left text-sm font-semibold text-ink-2">
             Password
             <input
-              className="picker-input"
+              className="min-h-11 px-sm py-xs border border-muted rounded-input bg-paper-2 text-ink outline-2 outline-transparent -outline-offset-2 hover:bg-paper-3 focus-visible:border-ink-2 focus-visible:outline-focus"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -669,33 +1172,33 @@ export default function App() {
           </label>
           {/* Always rendered so the form never jumps when a
               sign-in fails; the line is reserved in CSS. */}
-          <p className="picker-error" role="alert">
+          <p className="min-h-[1lh] text-error text-sm font-semibold" role="alert">
             {authError ?? ""}
           </p>
-          <button type="submit" className="picker-submit" disabled={authBusy}>
+          <button type="submit" className="min-h-11 px-md py-xs border-0 rounded-input bg-accent text-accent-ink font-semibold cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-accent-deep active:translate-y-px disabled:bg-accent-deep disabled:text-accent-soft disabled:cursor-not-allowed disabled:opacity-55" disabled={authBusy}>
             {mode === "login" ? "Log in" : "Create account"}
           </button>
         </form>
         {mode === "login" ? (
-          <button type="button" className="picker-switch" data-entrance onClick={() => switchMode("signup")}>
+          <button type="button" className="p-0 border-0 bg-transparent text-accent-deep font-semibold whitespace-nowrap cursor-pointer hover:underline" data-entrance onClick={() => switchMode("signup")}>
             No account yet? Create one
           </button>
         ) : (
-          <button type="button" className="picker-switch" data-entrance onClick={() => switchMode("login")}>
+          <button type="button" className="p-0 border-0 bg-transparent text-accent-deep font-semibold whitespace-nowrap cursor-pointer hover:underline" data-entrance onClick={() => switchMode("login")}>
             Already have an account? Log in
           </button>
         )}
         <button
           type="button"
-          className="picker-user"
+          className="flex items-center justify-center gap-xs w-[min(320px,100%)] justify-self-center min-h-11 px-md py-xs border border-rule rounded-input bg-transparent text-ink font-semibold cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-paper-2 active:translate-y-px disabled:bg-paper-3 disabled:text-muted disabled:cursor-not-allowed disabled:opacity-55"
           data-entrance
           disabled={authBusy}
           onClick={() => void signInAsDemo()}
         >
           Try the demo
         </button>
-        {authNotice && <p className="picker-hint" data-entrance>{authNotice}</p>}
-        <p className="picker-hint" data-entrance>
+        {authNotice && <p className="max-w-[420px] text-sm text-muted" data-entrance>{authNotice}</p>}
+        <p className="max-w-[420px] text-sm text-muted" data-entrance>
           Usernames are 3–20 characters, letters, numbers, underscores, and hyphens only;
           passwords are at least 8 characters. The demo needs no account. Open the board in two
           tabs, one signed in and one on the demo, to see live sync.
@@ -1073,7 +1576,7 @@ function Board({
   // a tiny pop, so the eye lands on the new selection.
   useEffect(() => {
     const active = toolRailRef.current?.querySelector<HTMLElement>(
-      ".tool-button.active",
+      "[data-tool-active]",
     );
     if (active) {
       settlePop(active);
@@ -1771,7 +2274,7 @@ function Board({
   useEffect(() => {
     if (!focusTextId || focusedTextIdRef.current === focusTextId) return;
     const box = document.querySelector(
-      `.text-box[data-text-id="${focusTextId}"] textarea`,
+      `[data-text-id="${focusTextId}"] textarea`,
     ) as HTMLTextAreaElement | null;
     if (!box) return;
     box.focus();
@@ -4473,7 +4976,7 @@ function Board({
     if (count === 0) return null;
     return (
       <span
-        className="vote-badge"
+        className={voteBadgeClass}
         data-item-id={itemId}
         data-vote-count={count}
         title={`${count} vote${count === 1 ? "" : "s"}`}
@@ -4492,29 +4995,29 @@ function Board({
   const presenter = findPresenter(presence);
 
   return (
-    <div className="board-page">
-      <header className="board-header">
-        <h1>SyncBoard</h1>
-        <span className="board-name">{currentBoardName}</span>
-        <div className="whos-here" ref={whosHereRef}>
+    <div className={boardPageClass}>
+      <header className="flex flex-wrap items-center gap-x-xs gap-y-2xs px-md py-xs bg-band border-b border-band-border text-band-ink max-phone:px-sm">
+        <h1 className="text-lg leading-[1.05] max-phone:text-md">SyncBoard</h1>
+        <span className="font-semibold whitespace-nowrap overflow-hidden text-ellipsis max-w-[28ch] max-phone:max-w-[13ch]">{currentBoardName}</span>
+        <div className="relative max-phone:min-w-0" ref={whosHereRef}>
           <button
             type="button"
-            className="header-presence"
+            className="flex items-center gap-xs px-xs py-2xs border-0 rounded-pill bg-transparent text-band-ink cursor-pointer hover:bg-ink-2 max-phone:gap-2xs max-phone:px-2xs max-phone:py-3xs max-phone:overflow-hidden max-phone:min-h-11"
             onClick={() => setWhosHereOpen(!whosHereOpen)}
             aria-expanded={whosHereOpen}
             aria-label={`Who's here — ${presence.length + 1} ${presence.length + 1 === 1 ? "person" : "people"} on this board`}
             title="See who's on this board"
           >
-            <span className="presence-count">{presence.length + 1} online</span>
+            <span className="text-sm font-semibold text-band-ink tabular-nums whitespace-nowrap max-phone:text-xs">{presence.length + 1} online</span>
             <PresenceChip person={user} you />
             {presence.map((person) => (
               <PresenceChip key={person.id} person={person} />
             ))}
           </button>
           {whosHereOpen && (
-            <div className="whos-here-panel" role="dialog" aria-label="Who's here" ref={whosHerePanelRef}>
-              <p className="whos-here-title">Who's here ({presence.length + 1})</p>
-              <ul className="whos-here-list">
+            <div className="absolute top-[calc(100%+var(--space-xs))] right-0 z-30 w-[260px] max-h-[320px] overflow-y-auto p-sm border border-rule rounded-card bg-paper text-ink shadow-lift max-phone:w-[min(260px,calc(100vw-32px))]" role="dialog" aria-label="Who's here" ref={whosHerePanelRef}>
+              <p className="mb-xs font-semibold">Who's here ({presence.length + 1})</p>
+              <ul className="grid gap-xs m-0 p-0 list-none">
                 {buildWhosHereRows(user, presence, frames).map((row) => (
                   <WhosHereRow key={row.id} row={row} />
                 ))}
@@ -4526,19 +5029,19 @@ function Board({
             board tools, then export/import. They sit on their
             own row under the title row; on a phone that row
             scrolls sideways instead of wrapping. */}
-        <div className="header-actions">
+        <div className="flex flex-wrap items-center gap-xs basis-full order-2 max-phone:flex-nowrap max-phone:overflow-x-auto max-phone:pb-2xs max-phone:[scrollbar-width:none] max-phone:[&::-webkit-scrollbar]:hidden max-phone:[&>*]:flex-none">
         <button
           type="button"
-          className="toolbar-button header-primary"
+          className={headerPrimaryButtonClass}
           onClick={() => void shareBoard()}
           title="Copy a link to this board"
         >
           {shareCopied ? "Copied" : "Share"}
         </button>
-        <span className="header-divider" aria-hidden="true" />
+        <span className="w-px h-lg flex-none bg-[color-mix(in_oklab,var(--color-band-ink)_25%,transparent)]" aria-hidden="true" />
         <button
           type="button"
-          className="toolbar-button"
+          className={headerButtonClass}
           onClick={() => setTemplatesOpen(!templatesOpen)}
           aria-expanded={templatesOpen}
           aria-label="Templates"
@@ -4548,7 +5051,7 @@ function Board({
         </button>
         <button
           type="button"
-          className="toolbar-button"
+          className={headerButtonClass}
           onClick={() => setSnapshotsOpen(!snapshotsOpen)}
           aria-expanded={snapshotsOpen}
           aria-label="Snapshots"
@@ -4559,7 +5062,7 @@ function Board({
         </button>
         <button
           type="button"
-          className="toolbar-button"
+          className={headerButtonClass}
           onClick={presentIndex !== null ? exitPresent : startPresent}
           disabled={presentIndex === null && frames.length === 0}
           aria-label={presentIndex !== null ? "Exit present mode" : "Present"}
@@ -4575,7 +5078,7 @@ function Board({
         </button>
         <button
           type="button"
-          className="toolbar-button"
+          className={headerButtonClass}
           onClick={() => setShortcutsOpen(!shortcutsOpen)}
           aria-expanded={shortcutsOpen}
           aria-label="Keyboard shortcuts"
@@ -4585,7 +5088,7 @@ function Board({
         </button>
         <button
           type="button"
-          className="toolbar-button"
+          className={headerButtonClass}
           onClick={autoOrganize}
           disabled={organizePlan === null}
           aria-label="Auto-organize"
@@ -4597,11 +5100,11 @@ function Board({
         >
           Auto-organize
         </button>
-        <span className="header-divider" aria-hidden="true" />
-        <div className="export-controls" role="group" aria-label="Export and import">
+        <span className="w-px h-lg flex-none bg-[color-mix(in_oklab,var(--color-band-ink)_25%,transparent)]" aria-hidden="true" />
+        <div className="flex flex-wrap gap-2xs items-center max-phone:flex-nowrap" role="group" aria-label="Export and import">
           <button
             type="button"
-            className="toolbar-button"
+            className={headerButtonClass}
             onClick={() => void exportPng()}
             title="Download the board as a PNG image"
           >
@@ -4610,7 +5113,7 @@ function Board({
           </button>
           <button
             type="button"
-            className="toolbar-button"
+            className={headerButtonClass}
             onClick={exportJson}
             title="Download the board as a JSON file"
           >
@@ -4619,7 +5122,7 @@ function Board({
           </button>
           <button
             type="button"
-            className="toolbar-button"
+            className={headerButtonClass}
             onClick={() => importInputRef.current?.click()}
             title="Replace this board with a board from a JSON file"
           >
@@ -4657,10 +5160,11 @@ function Board({
         {/* The account cluster: who you are, the connection
             state, and sign out. It sits at the right of the
             title row; the actions row wraps under it. */}
-        <div className="header-account">
-        <label className="theme-picker">
-          <span className="visually-hidden">Theme</span>
+        <div className="flex items-center gap-xs ml-auto max-phone:order-1 max-phone:basis-full max-phone:flex-wrap max-phone:justify-between max-phone:gap-2xs max-phone:ml-0">
+        <label className="inline-flex items-center">
+          <span className="sr-only">Theme</span>
           <select
+            className="min-h-[34px] px-sm py-2xs border [border-color:color-mix(in_oklab,var(--color-band-ink)_35%,transparent)] rounded-input bg-transparent text-band-ink text-sm font-semibold cursor-pointer [&>option]:bg-paper [&>option]:text-ink max-phone:min-h-11 max-phone:px-xs max-phone:text-xs"
             value={theme}
             onChange={(event) => changeTheme(event.target.value as ThemeName)}
             aria-label="Theme"
@@ -4673,33 +5177,38 @@ function Board({
             ))}
           </select>
         </label>
-        <span className="user-chip">
-          <span className="user-dot" style={{ background: user.color }} />
+        <span className="flex items-center gap-2xs font-semibold whitespace-nowrap max-phone:text-xs">
+          <span className="size-sm rounded-full" style={{ background: user.color }} />
           {user.name}
         </span>
-        <span className={`status status-${status}`}>
+        <span className={`px-xs py-2xs rounded-pill text-sm font-semibold whitespace-nowrap max-phone:py-3xs max-phone:text-xs ${statusClasses[status]}`}>
           {status === "connected"
             ? "Connected"
             : status === "connecting"
               ? "Connecting…"
               : "Disconnected"}
         </span>
-        {authError && <span className="auth-error">Sign-in failed: {authError}</span>}
-        <button type="button" className="sign-out" onClick={onSignOut}>
+        {authError && <span className="text-error-light text-sm font-semibold max-phone:basis-full max-phone:text-xs">Sign-in failed: {authError}</span>}
+        <button
+          type="button"
+          className="inline-flex items-center justify-center min-h-[34px] px-sm py-2xs border [border-color:color-mix(in_oklab,var(--color-band-ink)_35%,transparent)] rounded-input bg-transparent text-band-ink text-sm font-semibold whitespace-nowrap cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-[color-mix(in_oklab,var(--color-paper)_12%,transparent)] active:translate-y-px max-phone:min-h-11 max-phone:px-xs max-phone:text-xs"
+          onClick={onSignOut}
+        >
           Sign out
         </button>
         </div>
       </header>
       {presentIndex !== null && slides.length > 0 && (
-        <div className="present-bar" role="group" aria-label="Present mode">
-          <span className="present-title">
+        <div className={barClass} role="group" aria-label="Present mode">
+          <span className="font-bold text-ink max-phone:min-w-0 max-phone:truncate">
             {slides[Math.min(presentIndex, slides.length - 1)].title}
           </span>
-          <span className="present-count">
+          <span className="font-semibold text-ink-2 tabular-nums max-phone:flex-none">
             Slide {Math.min(presentIndex, slides.length - 1) + 1} of {slides.length}
           </span>
           <button
             type="button"
+            className={barButtonClass}
             onClick={() =>
               goToSlide(stepSlideIndex(presentIndex, -1, slides.length))
             }
@@ -4710,6 +5219,7 @@ function Board({
           </button>
           <button
             type="button"
+            className={barButtonClass}
             onClick={() =>
               goToSlide(stepSlideIndex(presentIndex, 1, slides.length))
             }
@@ -4718,36 +5228,36 @@ function Board({
           >
             Next →
           </button>
-          <button type="button" onClick={exitPresent} aria-label="Exit present mode">
+          <button type="button" className={barButtonClass} onClick={exitPresent} aria-label="Exit present mode">
             Exit
           </button>
         </div>
       )}
       {presentIndex === null && presenter && (
-        <p className="present-banner" role="status">
+        <p className="m-0 px-md py-2xs border-b border-rule bg-accent-soft text-ink-2 text-sm font-semibold text-center" role="status">
           {presenter.name} is presenting
         </p>
       )}
       {notice && (
-        <p className="board-notice" role="status">
+        <p className={boardNoticeClass} role="status">
           {notice}{" "}
-          <button type="button" onClick={onDismissNotice}>
+          <button type="button" className={boardNoticeButtonClass} onClick={onDismissNotice}>
             Dismiss
           </button>
         </p>
       )}
       {importMessage && (
-        <p className="board-notice" role="status">
+        <p className={boardNoticeClass} role="status">
           {importMessage}{" "}
-          <button type="button" onClick={() => setImportMessage(null)}>
+          <button type="button" className={boardNoticeButtonClass} onClick={() => setImportMessage(null)}>
             Dismiss
           </button>
         </p>
       )}
       {connectorPendingFromId && (
-        <p className="board-notice" role="status">
+        <p className={boardNoticeClass} role="status">
           Connector started: click another note, shape, text box, or frame to connect to it.{" "}
-          <button type="button" onClick={() => setConnectorPendingFromId(null)}>
+          <button type="button" className={boardNoticeButtonClass} onClick={() => setConnectorPendingFromId(null)}>
             Cancel
           </button>
         </p>
@@ -4760,13 +5270,13 @@ function Board({
           them all at once — only the starter can end it early,
           and clearing is off while it runs so hidden dots are
           never wiped blind. */}
-      <div className="voting-bar" role="group" aria-label="Dot voting">
+      <div className={barClass} role="group" aria-label="Dot voting">
         {votingSession?.active === true ? (
           timedRunning ? (
             <>
-              <span className="voting-status">
+              <span className={votingStatusClass}>
                 Timed voting session —{" "}
-                <span className="voting-timer">
+                <span className="font-bold text-accent tabular-nums">
                   {formatSessionCountdown(remainingSessionMs(votingSession, nowMs))}
                 </span>{" "}
                 left, started by {votingSession.startedByName}. You have {myDotsLeft} of{" "}
@@ -4774,38 +5284,39 @@ function Board({
                 runs out.
               </span>
               {votingSession.startedBy === user.id && (
-                <button type="button" onClick={endVoting}>
+                <button type="button" className={barButtonClass} onClick={endVoting}>
                   End now
                 </button>
               )}
-              <button type="button" onClick={clearVotes} disabled>
+              <button type="button" className={barButtonClass} onClick={clearVotes} disabled>
                 Clear votes
               </button>
             </>
           ) : (
             <>
-              <span className="voting-status">
+              <span className={votingStatusClass}>
                 Voting open, started by {votingSession.startedByName}. You have {myDotsLeft}{" "}
                 of {votingSession.dotsPerPerson} dots left.
               </span>
-              <button type="button" onClick={endVoting}>
+              <button type="button" className={barButtonClass} onClick={endVoting}>
                 End voting
               </button>
-              <button type="button" onClick={clearVotes} disabled={votes.length === 0}>
+              <button type="button" className={barButtonClass} onClick={clearVotes} disabled={votes.length === 0}>
                 Clear votes
               </button>
             </>
           )
         ) : votingSession ? (
           <>
-            <span className="voting-status">
+            <span className={votingStatusClass}>
               {votingSession.timed
                 ? `Timed session ended — all votes are now visible. Started by ${votingSession.startedByName}.`
                 : `Voting ended. The dots are frozen. Started by ${votingSession.startedByName}.`}
             </span>
-            <label className="voting-dots-label">
+            <label className={dotsLabelClass}>
               Dots per person
               <select
+                className={dotsSelectClass}
                 aria-label="Dots per person"
                 value={dotsPerPersonChoice}
                 onChange={(event) => setDotsPerPersonChoice(Number(event.target.value))}
@@ -4817,9 +5328,10 @@ function Board({
                 ))}
               </select>
             </label>
-            <label className="voting-dots-label">
+            <label className={dotsLabelClass}>
               Session length
               <select
+                className={dotsSelectClass}
                 aria-label="Timed session length"
                 value={timedDurationChoice}
                 onChange={(event) => setTimedDurationChoice(Number(event.target.value))}
@@ -4831,22 +5343,23 @@ function Board({
                 ))}
               </select>
             </label>
-            <button type="button" onClick={startVoting}>
+            <button type="button" className={barButtonClass} onClick={startVoting}>
               Start new voting
             </button>
-            <button type="button" onClick={startTimedSession}>
+            <button type="button" className={barButtonClass} onClick={startTimedSession}>
               Start timed session
             </button>
-            <button type="button" onClick={clearVotes} disabled={votes.length === 0}>
+            <button type="button" className={barButtonClass} onClick={clearVotes} disabled={votes.length === 0}>
               Clear votes
             </button>
           </>
         ) : (
           <>
-            <span className="voting-status">Dot voting</span>
-            <label className="voting-dots-label">
+            <span className={votingStatusClass}>Dot voting</span>
+            <label className={dotsLabelClass}>
               Dots per person
               <select
+                className={dotsSelectClass}
                 aria-label="Dots per person"
                 value={dotsPerPersonChoice}
                 onChange={(event) => setDotsPerPersonChoice(Number(event.target.value))}
@@ -4858,9 +5371,10 @@ function Board({
                 ))}
               </select>
             </label>
-            <label className="voting-dots-label">
+            <label className={dotsLabelClass}>
               Session length
               <select
+                className={dotsSelectClass}
                 aria-label="Timed session length"
                 value={timedDurationChoice}
                 onChange={(event) => setTimedDurationChoice(Number(event.target.value))}
@@ -4872,10 +5386,10 @@ function Board({
                 ))}
               </select>
             </label>
-            <button type="button" onClick={startVoting}>
+            <button type="button" className={barButtonClass} onClick={startVoting}>
               Start voting
             </button>
-            <button type="button" onClick={startTimedSession}>
+            <button type="button" className={barButtonClass} onClick={startTimedSession}>
               Start timed session
             </button>
           </>
@@ -4886,23 +5400,23 @@ function Board({
           is a bar under the header, like the voting bar — it
           wraps on a phone instead of squeezing the board. */}
       {templatesOpen && (
-        <div className="templates-bar" role="group" aria-label="Templates">
-          <span className="templates-title">Templates</span>
+        <div className={barClass} role="group" aria-label="Templates">
+          <span className="font-semibold text-ink-2">Templates</span>
           {TEMPLATES.map((template) => (
             <button
               key={template.id}
               type="button"
-              className="template-button"
+              className="flex flex-col items-start px-sm py-3xs border border-rule rounded-card bg-paper text-ink-2 text-left cursor-pointer hover:bg-accent-soft max-phone:flex-none max-phone:max-w-[220px]"
               onClick={() => insertTemplate(template)}
               title={template.description}
             >
-              <span className="template-name">{template.name}</span>
-              <span className="template-description">{template.description}</span>
+              <span className="font-semibold">{template.name}</span>
+              <span className="text-xs text-muted">{template.description}</span>
             </button>
           ))}
           <button
             type="button"
-            className="template-close"
+            className="px-sm py-3xs border border-rule rounded-card bg-paper text-ink-2 font-semibold cursor-pointer hover:bg-accent-soft max-phone:flex-none max-phone:min-h-10"
             onClick={() => setTemplatesOpen(false)}
             aria-label="Close templates"
             title="Close templates"
@@ -4916,12 +5430,12 @@ function Board({
           The "?" key and the header button toggle it; Escape
           closes it. */}
       {shortcutsOpen && (
-        <div className="shortcuts-panel" role="group" aria-label="Keyboard shortcuts">
-          <div className="shortcuts-head">
-            <span className="shortcuts-title">Keyboard shortcuts</span>
+        <div className="px-md py-xs border-b border-rule bg-paper-2 text-sm" role="group" aria-label="Keyboard shortcuts">
+          <div className="flex items-center justify-between gap-sm">
+            <span className="font-semibold text-ink-2">Keyboard shortcuts</span>
             <button
               type="button"
-              className="shortcuts-close"
+              className="px-sm py-3xs border border-rule rounded-card bg-paper text-ink-2 font-semibold cursor-pointer"
               onClick={() => setShortcutsOpen(false)}
               aria-label="Close keyboard shortcuts"
               title="Close keyboard shortcuts"
@@ -4929,17 +5443,17 @@ function Board({
               ×
             </button>
           </div>
-          <ul className="shortcuts-list">
+          <ul className="flex flex-col gap-3xs mt-xs mx-0 mb-0 p-0 list-none">
             {SHORTCUTS.map((shortcut) => (
-              <li key={shortcut.keys} className="shortcuts-row">
-                <kbd className="shortcuts-keys">{shortcut.keys}</kbd>
-                <span className="shortcuts-action">{shortcut.action}</span>
+              <li key={shortcut.keys} className="flex items-baseline gap-sm max-phone:flex-wrap max-phone:gap-x-sm max-phone:gap-y-2xs">
+                <kbd className="flex-none min-w-[11rem] px-xs py-3xs border border-rule rounded-input bg-paper text-ink font-outlier text-xs text-center max-phone:min-w-[7.5rem]">{shortcut.keys}</kbd>
+                <span className="text-ink-2">{shortcut.action}</span>
               </li>
             ))}
           </ul>
         </div>
       )}
-      <div className="board-main">
+      <div className={boardMainClass}>
         {/* Phone-only backdrop behind the open panel drawers:
             tapping it closes whichever panels are open. On
             desktop it never shows (the panels sit in the flow),
@@ -4947,7 +5461,7 @@ function Board({
         {(sidebarOpen || commentsOpen || snapshotsOpen) && (
           <button
             type="button"
-            className="panel-backdrop"
+            className={panelBackdropClass}
             aria-label="Close open panels"
             onClick={() => {
               setSidebarOpen(false);
@@ -4956,12 +5470,12 @@ function Board({
             }}
           />
         )}
-        <aside className={`board-sidebar${sidebarOpen ? "" : " collapsed"}`} aria-label="Boards">
-          <div className="board-sidebar-head">
-            <span className="board-sidebar-title">Boards</span>
+        <aside className={sidebarOpen ? boardSidebarClass : boardSidebarCollapsedClass} aria-label="Boards">
+          <div className={panelHeadClass}>
+            <span className={sidebarOpen ? panelTitleClass : `${panelTitleClass} hidden`}>Boards</span>
             <button
               type="button"
-              className="board-sidebar-toggle"
+              className={panelToggleClass}
               onClick={() => setSidebarOpen(!sidebarOpen)}
               aria-expanded={sidebarOpen}
               aria-label={sidebarOpen ? "Collapse boards sidebar" : "Expand boards sidebar"}
@@ -4972,18 +5486,19 @@ function Board({
           </div>
           {sidebarOpen && (
             <>
-              <ul className="board-list">
+              <ul className={boardListClass}>
                 {boards.map((board) => (
                   <li
                     key={board.id}
-                    className={`board-tab${board.id === boardId ? " active" : ""}`}
+                    className={board.id === boardId ? boardTabActiveClass : boardTabClass}
                   >
                     {renamingBoardId === board.id ? (
                       <form
-                        className="board-rename-form"
+                        className={boardRenameFormClass}
                         onSubmit={(event) => void submitRenameBoard(event, board)}
                       >
                         <input
+                          className={boardRenameInputClass}
                           aria-label={`Rename board ${board.name}`}
                           value={renameName}
                           onChange={(event) => setRenameName(event.target.value)}
@@ -4997,11 +5512,12 @@ function Board({
                         />
                         <button
                           type="submit"
+                          className={boardRenameSaveClass}
                           disabled={renamingBoard || renameName.trim() === ""}
                         >
                           Save
                         </button>
-                        <button type="button" onClick={() => setRenamingBoardId(null)}>
+                        <button type="button" className={boardRenameCancelClass} onClick={() => setRenamingBoardId(null)}>
                           Cancel
                         </button>
                       </form>
@@ -5009,7 +5525,7 @@ function Board({
                       <>
                         <button
                           type="button"
-                          className="board-tab-button"
+                          className={board.id === boardId ? boardTabButtonActiveClass : boardTabButtonClass}
                           onClick={() => onSwitchBoard(board.id)}
                           aria-current={board.id === boardId ? "true" : undefined}
                           title={board.name}
@@ -5018,7 +5534,7 @@ function Board({
                         </button>
                         <button
                           type="button"
-                          className="board-tab-rename"
+                          className={board.id === boardId ? boardTabRenameActiveClass : boardTabRenameClass}
                           onClick={() => {
                             setRenamingBoardId(board.id);
                             setRenameName(board.name);
@@ -5031,7 +5547,7 @@ function Board({
                         {canDeleteBoard(board.id) && (
                           <button
                             type="button"
-                            className="board-tab-delete"
+                            className={board.id === boardId ? boardTabDeleteActiveClass : boardTabDeleteClass}
                             onClick={() => void onDeleteBoard(board)}
                             aria-label={`Delete board ${board.name}`}
                             title={`Delete ${board.name}`}
@@ -5045,8 +5561,9 @@ function Board({
                 ))}
               </ul>
               {showNewBoardForm ? (
-                <form className="board-new-form" onSubmit={(event) => void submitNewBoard(event)}>
+                <form className={boardNewFormClass} onSubmit={(event) => void submitNewBoard(event)}>
                   <input
+                    className={boardNewInputClass}
                     aria-label="New board name"
                     value={newBoardName}
                     onChange={(event) => setNewBoardName(event.target.value)}
@@ -5054,11 +5571,12 @@ function Board({
                     autoFocus
                     maxLength={100}
                   />
-                  <button type="submit" disabled={creatingBoard || newBoardName.trim() === ""}>
+                  <button type="submit" className={boardNewButtonClass} disabled={creatingBoard || newBoardName.trim() === ""}>
                     Create board
                   </button>
                   <button
                     type="button"
+                    className={boardNewButtonClass}
                     onClick={() => {
                       setShowNewBoardForm(false);
                       setNewBoardName("");
@@ -5070,59 +5588,65 @@ function Board({
               ) : (
                 <button
                   type="button"
-                  className="board-new-button"
+                  className={boardNewDashedButtonClass}
                   onClick={() => setShowNewBoardForm(true)}
                 >
                   + New board
                 </button>
               )}
               {boardsError && (
-                <p className="board-error board-sidebar-error" role="alert">
+                <p className={boardSidebarErrorClass} role="alert">
                   {boardsError}
                 </p>
               )}
             </>
           )}
         </aside>
-        <nav className="tool-rail" aria-label="Board tools" ref={toolRailRef}>
-          <span className="rail-group-label">Add</span>
+        <nav className={toolRailClass} aria-label="Board tools" ref={toolRailRef}>
+          <span className={railGroupLabelClass}>Add</span>
           <button
             type="button"
-            className="toolbar-button"
+            className={railButtonClass}
+            data-rail-button
             onClick={createNoteAtCenter}
             aria-label="Add note"
           >
-            + <span className="tool-label">Note</span>
+            + <span className="max-phone:hidden">Note</span>
           </button>
           <button
             type="button"
-            className="toolbar-button"
+            className={railButtonClass}
+            data-rail-button
             onClick={() => imageInputRef.current?.click()}
             aria-label="Add image"
             title="Add an image to the board"
           >
             {ACTION_ICONS.upload}
-            <span className="tool-label">Image</span>
+            <span className="max-phone:hidden">Image</span>
           </button>
           <button
             type="button"
-            className={`toolbar-button tool-button${tool === "voice" ? " active" : ""}`}
+            className={tool === "voice" ? railButtonActiveClass : railButtonClass}
+            data-rail-button
+            data-tool-active={tool === "voice" ? "true" : undefined}
             onClick={() => setTool(tool === "voice" ? "select" : "voice")}
             aria-pressed={tool === "voice"}
             aria-label="Voice note"
             title="Click empty canvas to drop a voice note and record"
           >
             {TOOL_ICONS.voice}
-            <span className="tool-label">Voice</span>
+            <span className="max-phone:hidden">Voice</span>
           </button>
-          <span className="toolbar-divider" aria-hidden="true" />
-          <span className="rail-group-label">Tools</span>
-          <div className="tool-picker" role="group" aria-label="Drawing tools">
+          <span className={railDividerClass} aria-hidden="true" />
+          <span className={railGroupLabelClass}>Tools</span>
+          <div className={railPickerClass} role="group" aria-label="Drawing tools">
             {TOOLS.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                className={`toolbar-button tool-button${tool === item.id ? " active" : ""}`}
+                className={tool === item.id ? railButtonActiveClass : railButtonClass}
+                data-rail-button
+                data-tool-active={tool === item.id ? "true" : undefined}
                 onClick={() => setTool(item.id)}
                 disabled={item.id === "vote" && votingSession?.active !== true}
                 aria-pressed={tool === item.id}
@@ -5146,18 +5670,19 @@ function Board({
                 }
               >
                 {TOOL_ICONS[item.id]}
-                <span className="tool-label">{item.label}</span>
+                <span className="max-phone:hidden">{item.label}</span>
               </button>
             ))}
           </div>
-          <span className="toolbar-divider" aria-hidden="true" />
-          <span className="rail-group-label">Color</span>
-          <div className="color-picker" role="group" aria-label="Note and shape color">
+          <span className={railDividerClass} aria-hidden="true" />
+          <span className={railGroupLabelClass}>Color</span>
+          <div className={colorPickerClass} role="group" aria-label="Note and shape color">
             {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
               <button
                 key={color}
                 type="button"
-                className={`color-dot${color === pickedColor ? " active" : ""}`}
+                className={color === pickedColor ? colorDotActiveClass : colorDotClass}
+                data-color-dot
                 style={{ background: NOTE_COLORS[color] }}
                 onClick={() => pickColor(color)}
                 aria-label={`${color} note`}
@@ -5165,14 +5690,15 @@ function Board({
               />
             ))}
           </div>
-          <span className="toolbar-divider" aria-hidden="true" />
-          <span className="rail-group-label">Text</span>
-          <div className="font-size-picker" role="group" aria-label="Text size">
+          <span className={railDividerClass} aria-hidden="true" />
+          <span className={railGroupLabelClass}>Text</span>
+          <div className={railPickerClass} role="group" aria-label="Text size">
             {TEXT_FONT_SIZES.map((size) => (
               <button
                 key={size}
                 type="button"
-                className={`toolbar-button font-size-button${pickedFontSize === size ? " active" : ""}`}
+                className={pickedFontSize === size ? fontSizeButtonActiveClass : fontSizeButtonClass}
+                data-rail-button
                 onClick={() => pickFontSize(size)}
                 aria-pressed={pickedFontSize === size}
                 aria-label={`${size} text`}
@@ -5182,33 +5708,36 @@ function Board({
               </button>
             ))}
           </div>
-          <span className="toolbar-divider" aria-hidden="true" />
-          <span className="rail-group-label">History</span>
+          <span className={railDividerClass} aria-hidden="true" />
+          <span className={railGroupLabelClass}>History</span>
           <button
             type="button"
-            className="toolbar-button"
+            className={railButtonClass}
+            data-rail-button
             onClick={undo}
             disabled={!canUndo}
             aria-label="Undo"
             title="Undo (Ctrl+Z)"
           >
             {ACTION_ICONS.undo}
-            <span className="tool-label">Undo</span>
+            <span className="max-phone:hidden">Undo</span>
           </button>
           <button
             type="button"
-            className="toolbar-button"
+            className={railButtonClass}
+            data-rail-button
             onClick={redo}
             disabled={!canRedo}
             aria-label="Redo"
             title="Redo (Ctrl+Shift+Z)"
           >
             {ACTION_ICONS.redo}
-            <span className="tool-label">Redo</span>
+            <span className="max-phone:hidden">Redo</span>
           </button>
         </nav>
         <div
-          className={`board${panning ? " panning" : ""}${tool !== "select" ? " drawing" : ""}`}
+          className={`${boardClass} ${tool !== "select" ? "cursor-crosshair" : panning ? "cursor-grabbing" : "cursor-grab"}`}
+          data-board
           ref={boardRef}
           onPointerMove={(event) => {
             trackCursor(event);
@@ -5255,7 +5784,8 @@ function Board({
           onDoubleClick={createNoteAtPoint}
         >
           <div
-            className="board-canvas"
+            className={boardCanvasClass}
+            data-board-canvas
             ref={canvasRef}
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
           >
@@ -5266,7 +5796,7 @@ function Board({
               return (
                 <div
                   key={frame.id}
-                  className="frame"
+                  className={frameClass}
                   data-frame-id={frame.id}
                   onPointerDown={(event) => {
                     if (event.button !== 0) return;
@@ -5326,7 +5856,7 @@ function Board({
                     <>
                       <button
                         type="button"
-                        className="note-delete"
+                        className={itemDeleteClass}
                         onClick={() => deleteFrame(frame.id)}
                         onPointerDown={(event) => event.stopPropagation()}
                         aria-label="Delete frame"
@@ -5335,7 +5865,7 @@ function Board({
                         ×
                       </button>
                       <div
-                        className="note-resize"
+                        className={itemResizeClass}
                         onPointerDown={(event) => startFrameResize(event, frame)}
                         onPointerMove={moveFrameResize}
                         onPointerUp={endFrameResize}
@@ -5346,7 +5876,7 @@ function Board({
                 </div>
               );
             })}
-            <svg className="connector-svg" aria-hidden="true">
+            <svg className={connectorSvgClass} aria-hidden="true">
               <defs>
                 {(Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => (
                   <marker
@@ -5376,7 +5906,7 @@ function Board({
                     {/* A wide transparent line, so the thin visible
                         line is easy to click. */}
                     <line
-                      className="connector-hit"
+                      className={connectorHitClass}
                       x1={ends.x1}
                       y1={ends.y1}
                       x2={ends.x2}
@@ -5387,7 +5917,7 @@ function Board({
                       }}
                     />
                     <line
-                      className="connector-line"
+                      className={connectorLineClass}
                       x1={ends.x1}
                       y1={ends.y1}
                       x2={ends.x2}
@@ -5421,7 +5951,7 @@ function Board({
                 <button
                   key={connector.id}
                   type="button"
-                  className="connector-label"
+                  className={connectorLabelClass}
                   style={{
                     left: (ends.x1 + ends.x2) / 2,
                     top: (ends.y1 + ends.y2) / 2,
@@ -5441,12 +5971,12 @@ function Board({
             })}
             {selectedConnectorMid && selectedConnector && (
               <div
-                className="connector-toolbar"
+                className={connectorToolbarClass}
                 style={{ left: selectedConnectorMid.x, top: selectedConnectorMid.y }}
                 onPointerDown={(event) => event.stopPropagation()}
               >
                 <input
-                  className="connector-label-input"
+                  className={connectorLabelInputClass}
                   value={
                     connectorLabelDraft?.id === selectedConnector.id
                       ? connectorLabelDraft.value
@@ -5485,7 +6015,7 @@ function Board({
                 />
                 <button
                   type="button"
-                  className="connector-arrow-toggle"
+                  className={connectorArrowToggleClass}
                   aria-pressed={selectedConnector.arrow}
                   onClick={() =>
                     toggleConnectorArrow(selectedConnector.id, !selectedConnector.arrow)
@@ -5497,7 +6027,7 @@ function Board({
                 </button>
                 <button
                   type="button"
-                  className="connector-delete"
+                  className={connectorDeleteClass}
                   onClick={() => deleteConnector(selectedConnector.id)}
                   aria-label="Delete connector"
                   title="Delete connector (Delete key)"
@@ -5525,7 +6055,7 @@ function Board({
               return (
                 <div
                   key={shape.id}
-                  className="shape"
+                  className={shapeClass}
                   data-shape-id={shape.id}
                   data-shape-kind={shape.kind}
                   onPointerDown={(event) => {
@@ -5565,7 +6095,7 @@ function Board({
                 >
                   {selectors.length > 0 && (
                     <span
-                      className="shape-selector"
+                      className={itemSelectorClass}
                       style={{ background: selectors[0].color }}
                     >
                       {selectors.map((person) => person.name).join(", ")}
@@ -5574,7 +6104,7 @@ function Board({
                   {voteBadge(shape.id)}
                   {shape.kind === "line" && (
                     <svg
-                      className="shape-svg"
+                      className={shapeSvgClass}
                       width="100%"
                       height="100%"
                       viewBox={`0 0 ${boxW} ${boxH}`}
@@ -5606,7 +6136,7 @@ function Board({
                   )}
                   {shape.kind === "pen" && (
                     <svg
-                      className="shape-svg"
+                      className={shapeSvgClass}
                       width="100%"
                       height="100%"
                       viewBox={`0 0 ${boxW} ${boxH}`}
@@ -5627,7 +6157,7 @@ function Board({
                     shape.kind === "triangle" ||
                     shape.kind === "star") && (
                     <svg
-                      className="shape-svg"
+                      className={shapeSvgClass}
                       width="100%"
                       height="100%"
                       viewBox={`0 0 ${boxW} ${boxH}`}
@@ -5649,7 +6179,7 @@ function Board({
                     <>
                       <button
                         type="button"
-                        className="note-delete"
+                        className={itemDeleteClass}
                         onClick={() => deleteShape(shape.id)}
                         onPointerDown={(event) => event.stopPropagation()}
                         aria-label="Delete shape"
@@ -5659,7 +6189,7 @@ function Board({
                       </button>
                       {shape.kind !== "pen" && (
                         <div
-                          className="note-resize"
+                          className={itemResizeClass}
                           onPointerDown={(event) => startShapeResize(event, shape)}
                           onPointerMove={moveShapeResize}
                           onPointerUp={endShapeResize}
@@ -5676,7 +6206,7 @@ function Board({
               return (
                 <div
                   key={image.id}
-                  className="image-item"
+                  className={imageItemClass}
                   data-image-id={image.id}
                   onPointerDown={(event) => {
                     if (event.button !== 0) return;
@@ -5703,12 +6233,12 @@ function Board({
                       : undefined),
                   }}
                 >
-                  <img src={image.dataUrl} alt="Uploaded image" draggable={false} />
+                  <img className={imageItemImgClass} src={image.dataUrl} alt="Uploaded image" draggable={false} />
                   {isSelected && (
                     <>
                       <button
                         type="button"
-                        className="note-delete"
+                        className={itemDeleteClass}
                         onClick={() => deleteImage(image.id)}
                         onPointerDown={(event) => event.stopPropagation()}
                         aria-label="Delete image"
@@ -5717,7 +6247,7 @@ function Board({
                         ×
                       </button>
                       <div
-                        className="note-resize"
+                        className={itemResizeClass}
                         onPointerDown={(event) => startImageResize(event, image)}
                         onPointerMove={moveImageResize}
                         onPointerUp={endImageResize}
@@ -5734,7 +6264,7 @@ function Board({
               return (
                 <div
                   key={note.id}
-                  className="voice-note"
+                  className={voiceNoteClass}
                   data-voice-id={note.id}
                   onPointerDown={(event) => {
                     if (event.button !== 0) return;
@@ -5776,7 +6306,7 @@ function Board({
                   />
                   <button
                     type="button"
-                    className="voice-play"
+                    className={voicePlayClass}
                     onClick={(event) => {
                       event.stopPropagation();
                       toggleVoicePlayback(note);
@@ -5789,13 +6319,13 @@ function Board({
                   >
                     {isPlaying ? "⏸" : "▶"}
                   </button>
-                  <span className="voice-duration" aria-label={`${formatDuration(note.durationSeconds)} long`}>
+                  <span className={voiceDurationClass} aria-label={`${formatDuration(note.durationSeconds)} long`}>
                     {formatDuration(note.durationSeconds)}
                   </span>
                   {isSelected && (
                     <button
                       type="button"
-                      className="note-delete"
+                      className={itemDeleteClass}
                       onClick={() => deleteVoiceNote(note.id)}
                       onPointerDown={(event) => event.stopPropagation()}
                       aria-label="Delete voice note"
@@ -5809,16 +6339,16 @@ function Board({
             })}
             {recordingDraft && (
               <div
-                className="voice-note recording"
+                className={voiceNoteRecordingClass}
                 role="status"
                 aria-label="Recording voice note"
                 style={{ left: recordingDraft.x, top: recordingDraft.y }}
               >
-                <span className="voice-rec-dot" aria-hidden="true" />
-                <span className="voice-duration">{formatDuration(recordingElapsed)}</span>
+                <span className={voiceRecDotClass} aria-hidden="true" />
+                <span className={voiceDurationClass}>{formatDuration(recordingElapsed)}</span>
                 <button
                   type="button"
-                  className="voice-stop"
+                  className={voiceStopClass}
                   onClick={stopRecording}
                   aria-label="Stop recording"
                   title="Stop recording and save the note"
@@ -5827,7 +6357,7 @@ function Board({
                 </button>
                 <button
                   type="button"
-                  className="note-delete"
+                  className={itemDeleteClass}
                   onClick={cancelRecording}
                   onPointerDown={(event) => event.stopPropagation()}
                   aria-label="Cancel recording"
@@ -5851,7 +6381,8 @@ function Board({
             return (
               <div
                 key={note.id}
-                className="note"
+                className={noteClass}
+                data-note-id={note.id}
                 onPointerDown={(event) => {
                   if (event.button !== 0) return;
                   if (tool === "connector") {
@@ -5885,7 +6416,7 @@ function Board({
               >
                 {selectors.length > 0 && (
                   <span
-                    className="note-selector"
+                    className={itemSelectorClass}
                     style={{ background: selectors[0].color }}
                   >
                     {selectors.map((person) => person.name).join(", ")}
@@ -5893,13 +6424,13 @@ function Board({
                 )}
                 {voteBadge(note.id)}
                 <div
-                  className="note-handle"
+                  className={noteHandleClass}
                   onPointerDown={(event) => startDrag(event, note)}
                   onPointerMove={moveDrag}
                   onPointerUp={endDrag}
                 />
                 <textarea
-                  className="note-text"
+                  className={noteTextClass}
                   value={note.text}
                   onChange={(event) => changeNoteText(note.id, event.target.value)}
                   onBlur={() => undoManagerRef.current?.stopCapturing()}
@@ -5910,7 +6441,7 @@ function Board({
                   <>
                     <button
                       type="button"
-                      className="note-delete"
+                      className={itemDeleteClass}
                       onClick={() => deleteNote(note.id)}
                       aria-label="Delete note"
                       title="Delete note (Delete key)"
@@ -5918,7 +6449,7 @@ function Board({
                       ×
                     </button>
                     <div
-                      className="note-resize"
+                      className={itemResizeClass}
                       onPointerDown={(event) => startResize(event, note)}
                       onPointerMove={moveResize}
                       onPointerUp={endResize}
@@ -5943,7 +6474,7 @@ function Board({
             return (
               <div
                 key={textBox.id}
-                className="text-box"
+                className={textBoxClass}
                 data-text-id={textBox.id}
                 onPointerDown={(event) => {
                   if (event.button !== 0) return;
@@ -5975,7 +6506,7 @@ function Board({
               >
                 {selectors.length > 0 && (
                   <span
-                    className="text-selector"
+                    className={itemSelectorClass}
                     style={{ background: selectors[0].color }}
                   >
                     {selectors.map((person) => person.name).join(", ")}
@@ -5983,13 +6514,13 @@ function Board({
                 )}
                 {voteBadge(textBox.id)}
                 <div
-                  className="text-handle"
+                  className={textHandleClass}
                   onPointerDown={(event) => startTextDrag(event, textBox)}
                   onPointerMove={moveTextDrag}
                   onPointerUp={endTextDrag}
                 />
                 <textarea
-                  className="text-box-text"
+                  className={textBoxTextClass}
                   value={textBox.text}
                   onChange={(event) => changeTextBoxText(textBox.id, event.target.value)}
                   onBlur={() => undoManagerRef.current?.stopCapturing()}
@@ -6000,7 +6531,7 @@ function Board({
                   <>
                     <button
                       type="button"
-                      className="note-delete"
+                      className={itemDeleteClass}
                       onClick={() => deleteTextBox(textBox.id)}
                       aria-label="Delete text box"
                       title="Delete text box (Delete key)"
@@ -6008,7 +6539,7 @@ function Board({
                       ×
                     </button>
                     <div
-                      className="note-resize"
+                      className={itemResizeClass}
                       onPointerDown={(event) => startTextResize(event, textBox)}
                       onPointerMove={moveTextResize}
                       onPointerUp={endTextResize}
@@ -6032,7 +6563,7 @@ function Board({
             return (
               <input
                 key={frame.id}
-                className="frame-title"
+                className={frameTitleClass}
                 value={titleShown}
                 style={{
                   left: frame.x + FRAME_TITLE_INSET,
@@ -6078,7 +6609,7 @@ function Board({
               <button
                 key={comment.id}
                 type="button"
-                className={`comment-pin${selectedCommentId === comment.id ? " selected" : ""}`}
+                className={selectedCommentId === comment.id ? commentPinSelectedClass : commentPinClass}
                 style={{ left: comment.x, top: comment.y }}
                 onClick={() => {
                   setSelectedCommentId(comment.id);
@@ -6095,7 +6626,7 @@ function Board({
             ))}
           {commentDraft && (
             <span
-              className="comment-pin draft"
+              className={commentPinDraftClass}
               style={{ left: commentDraft.x, top: commentDraft.y }}
               aria-hidden="true"
             >
@@ -6109,23 +6640,23 @@ function Board({
               layer, so it stays centred no matter where the board
               is panned or how far it is zoomed. */}
           {notes.length === 0 && shapes.length === 0 && texts.length === 0 && images.length === 0 && frames.length === 0 && (
-            <div className="board-empty">
+            <div className={boardEmptyClass}>
               {status === "connected" ? (
                 <>
-                  <p className="board-empty-title">This board is empty.</p>
-                  <p className="board-empty-line">
+                  <p className={boardEmptyTitleClass}>This board is empty.</p>
+                  <p className={boardEmptyLineClass}>
                     Add a note, draw a shape, or write some text to start.
                   </p>
                 </>
               ) : status === "disconnected" ? (
                 <>
-                  <p className="board-empty-title">Can&rsquo;t reach the board.</p>
-                  <p className="board-empty-line">
+                  <p className={boardEmptyTitleClass}>Can&rsquo;t reach the board.</p>
+                  <p className={boardEmptyLineClass}>
                     Check your connection. The board will load when it reconnects.
                   </p>
                 </>
               ) : (
-                <p className="board-empty-line">Loading notes…</p>
+                <p className={boardEmptyLineClass}>Loading notes…</p>
               )}
             </div>
           )}
@@ -6133,7 +6664,7 @@ function Board({
             person.cursor ? (
               <div
                 key={person.id}
-                className="remote-cursor"
+                className={remoteCursorClass}
                 // Screen space, not board space: the cursor keeps a
                 // constant size and lands on the same note in this
                 // tab no matter what zoom or pan this tab is using.
@@ -6151,7 +6682,7 @@ function Board({
                   />
                 </svg>
                 <span
-                  className="remote-cursor-name"
+                  className={remoteCursorNameClass}
                   style={{ background: person.color }}
                 >
                   {person.name}
@@ -6164,9 +6695,9 @@ function Board({
               the board's frames, notes, and shapes as small
               rectangles, with the viewport on top. Click or
               drag on it to pan the canvas. */}
-          <div className="board-corner">
+          <div className={boardCornerClass}>
             <div
-              className="minimap"
+              className={minimapClass}
               ref={minimapRef}
               aria-label="Minimap — click or drag to pan the board"
               title="Minimap — click or drag to pan"
@@ -6186,7 +6717,7 @@ function Board({
                 return (
                   <span
                     key={item.id}
-                    className={`minimap-item minimap-item-${item.kind}`}
+                    className={`absolute box-border${item.kind === "frame" ? " bg-transparent" : ""}`}
                     style={{
                       left: rect.x,
                       top: rect.y,
@@ -6204,7 +6735,7 @@ function Board({
                 );
               })}
               <span
-                className="minimap-viewport"
+                className="absolute box-border border-2 border-accent rounded-[2px] bg-[color-mix(in_oklab,var(--color-accent)_12%,transparent)] pointer-events-none"
                 style={{
                   left: minimapViewportRect.x,
                   top: minimapViewportRect.y,
@@ -6213,22 +6744,24 @@ function Board({
                 }}
               />
             </div>
-            <div className="zoom-controls" role="group" aria-label="Zoom">
+            <div className={zoomControlsClass} role="group" aria-label="Zoom">
             <button
               type="button"
-              className="toolbar-button zoom-button"
+              className={zoomButtonClass}
+              data-zoom-button
               onClick={() => zoomBy(1 / ZOOM_STEP)}
               aria-label="Zoom out"
               title="Zoom out"
             >
               −
             </button>
-            <span className="zoom-label" aria-live="polite">
+            <span className={zoomLabelClass} data-zoom-label aria-live="polite">
               {Math.round(zoom * 100)}%
             </span>
             <button
               type="button"
-              className="toolbar-button zoom-button"
+              className={zoomButtonClass}
+              data-zoom-button
               onClick={() => zoomBy(ZOOM_STEP)}
               aria-label="Zoom in"
               title="Zoom in"
@@ -6237,7 +6770,7 @@ function Board({
             </button>
             <button
               type="button"
-              className="toolbar-button"
+              className={resetButtonClass}
               onClick={resetView}
               disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
               title="Reset view to 100%"
@@ -6248,17 +6781,17 @@ function Board({
           </div>
         </div>
         <aside
-          className={`comments-panel${commentsOpen ? "" : " collapsed"}`}
+          className={commentsOpen ? commentsPanelClass : commentsPanelCollapsedClass}
           aria-label="Comments"
           ref={commentsPanelRef}
         >
-          <div className="comments-panel-head">
-            <span className="comments-panel-title">
+          <div className={commentsOpen ? panelHeadRuledClass : panelHeadClass}>
+            <span className={commentsOpen ? panelTitleClass : `${panelTitleClass} hidden`}>
               Comments{openCommentCount > 0 ? ` (${openCommentCount})` : ""}
             </span>
             <button
               type="button"
-              className="board-sidebar-toggle"
+              className={panelToggleClass}
               onClick={() => setCommentsOpen(!commentsOpen)}
               aria-expanded={commentsOpen}
               aria-label={commentsOpen ? "Collapse comments panel" : "Expand comments panel"}
@@ -6271,16 +6804,17 @@ function Board({
             <>
               {commentDraft && (
                 <form
-                  className="comment-composer"
+                  className={panelComposerClass}
                   onSubmit={(event) => {
                     event.preventDefault();
                     submitComment();
                   }}
                 >
-                  <label className="comment-composer-label" htmlFor="comment-text">
+                  <label className={panelComposerLabelClass} htmlFor="comment-text">
                     New comment
                   </label>
                   <textarea
+                    className={commentTextareaClass}
                     id="comment-text"
                     value={commentText}
                     onChange={(event) => setCommentText(event.target.value)}
@@ -6290,12 +6824,13 @@ function Board({
                     rows={3}
                     maxLength={500}
                   />
-                  <div className="comment-composer-actions">
-                    <button type="submit" disabled={commentText.trim() === ""}>
+                  <div className={panelActionsClass}>
+                    <button type="submit" className={panelPillButtonClass} disabled={commentText.trim() === ""}>
                       Add comment
                     </button>
                     <button
                       type="button"
+                      className={panelPillButtonClass}
                       onClick={() => {
                         setCommentDraft(null);
                         setCommentText("");
@@ -6307,31 +6842,32 @@ function Board({
                 </form>
               )}
               {sortedComments.length === 0 ? (
-                <p className="comments-empty">
+                <p className={panelEmptyClass}>
                   No comments yet. Pick the Comment tool and click the board to pin one.
                 </p>
               ) : (
-                <ul className="comment-list">
+                <ul className={panelListClass}>
                   {sortedComments.map((comment) => (
                     <li
                       key={comment.id}
                       data-comment-id={comment.id}
                       className={
-                        `comment-thread${comment.resolved ? " resolved" : ""}` +
-                        `${selectedCommentId === comment.id ? " selected" : ""}`
+                        (selectedCommentId === comment.id ? commentThreadSelectedClass : commentThreadClass) +
+                        (comment.resolved ? " opacity-65" : "")
                       }
                       onClick={() => setSelectedCommentId(comment.id)}
                     >
-                      <div className="comment-thread-head">
-                        <span className="comment-author">{comment.author}</span>
-                        <span className="comment-time">
+                      <div className={commentThreadHeadClass}>
+                        <span className="font-semibold">{comment.author}</span>
+                        <span className={panelTimeClass}>
                           {formatCommentTime(comment.createdAt)}
                         </span>
                       </div>
-                      <p className="comment-text">{comment.text}</p>
-                      <div className="comment-actions">
+                      <p className={commentTextClass}>{comment.text}</p>
+                      <div className={panelActionsClass}>
                         <button
                           type="button"
+                          className={panelPillButtonClass}
                           onClick={(event) => {
                             event.stopPropagation();
                             resolveComment(comment.id, !comment.resolved);
@@ -6341,6 +6877,7 @@ function Board({
                         </button>
                         <button
                           type="button"
+                          className={panelPillButtonClass}
                           onClick={(event) => {
                             event.stopPropagation();
                             deleteComment(comment.id);
@@ -6357,18 +6894,18 @@ function Board({
           )}
         </aside>
         <aside
-          className={`snapshots-panel${snapshotsOpen ? "" : " collapsed"}`}
+          className={snapshotsOpen ? snapshotsPanelClass : snapshotsPanelCollapsedClass}
           aria-label="Snapshots"
           ref={snapshotsPanelRef}
         >
-          <div className="snapshots-panel-head">
-            <span className="snapshots-panel-title">
+          <div className={snapshotsOpen ? panelHeadRuledClass : panelHeadClass}>
+            <span className={snapshotsOpen ? panelTitleClass : `${panelTitleClass} hidden`}>
               Snapshots
               {snapshots !== null && snapshots.length > 0 ? ` (${snapshots.length})` : ""}
             </span>
             <button
               type="button"
-              className="board-sidebar-toggle"
+              className={panelToggleClass}
               onClick={() => setSnapshotsOpen(!snapshotsOpen)}
               aria-expanded={snapshotsOpen}
               aria-label={snapshotsOpen ? "Collapse snapshots panel" : "Expand snapshots panel"}
@@ -6380,16 +6917,17 @@ function Board({
           {snapshotsOpen && (
             <>
               <form
-                className="snapshot-composer"
+                className={panelComposerClass}
                 onSubmit={(event) => {
                   event.preventDefault();
                   void saveSnapshot();
                 }}
               >
-                <label className="snapshot-composer-label" htmlFor="snapshot-name">
+                <label className={panelComposerLabelClass} htmlFor="snapshot-name">
                   Save a snapshot of this board
                 </label>
                 <input
+                  className={snapshotNameInputClass}
                   id="snapshot-name"
                   value={snapshotName}
                   onChange={(event) => setSnapshotName(event.target.value)}
@@ -6397,32 +6935,33 @@ function Board({
                   aria-label="Snapshot name"
                   maxLength={80}
                 />
-                <div className="snapshot-composer-actions">
-                  <button type="submit" disabled={snapshotsBusy}>
+                <div className={panelActionsClass}>
+                  <button type="submit" className={panelPillButtonClass} disabled={snapshotsBusy}>
                     Save snapshot
                   </button>
                 </div>
               </form>
               {snapshots === null ? (
-                <p className="snapshots-empty">Loading snapshots…</p>
+                <p className={panelEmptyClass}>Loading snapshots…</p>
               ) : snapshots.length === 0 ? (
-                <p className="snapshots-empty">
+                <p className={panelEmptyClass}>
                   No snapshots yet. Save one to keep a copy of this board you can come back to.
                 </p>
               ) : (
-                <ul className="snapshot-list">
+                <ul className={panelListClass}>
                   {snapshots.map((snapshot) => (
-                    <li key={snapshot.id} className="snapshot-row">
-                      <div className="snapshot-row-head">
-                        <span className="snapshot-name">{snapshot.name}</span>
-                        <span className="snapshot-time">
+                    <li key={snapshot.id} className={snapshotRowClass}>
+                      <div className={snapshotRowHeadClass}>
+                        <span className={snapshotNameClass}>{snapshot.name}</span>
+                        <span className={panelTimeClass}>
                           {formatSnapshotTime(snapshot.createdAt)}
                         </span>
                       </div>
-                      <p className="snapshot-counts">{snapshotCountsLabel(snapshot.counts)}</p>
-                      <div className="snapshot-actions">
+                      <p className={snapshotCountsClass}>{snapshotCountsLabel(snapshot.counts)}</p>
+                      <div className={panelActionsClass}>
                         <button
                           type="button"
+                          className={panelPillButtonClass}
                           disabled={snapshotsBusy}
                           onClick={() => void restoreSnapshot(snapshot)}
                           title="Replace this board with this snapshot — a safety copy is saved first"
@@ -6431,6 +6970,7 @@ function Board({
                         </button>
                         <button
                           type="button"
+                          className={panelPillButtonClass}
                           disabled={snapshotsBusy}
                           onClick={() => void handleDeleteSnapshot(snapshot)}
                         >
@@ -6455,18 +6995,18 @@ function Board({
 // the board — the row still shows them, just without a claim.
 function WhosHereRow({ row }: { row: WhosHereRowData }) {
   return (
-    <li className="whos-here-row">
-      <span className="presence-avatar" style={{ background: row.color }}>
+    <li className="flex items-center gap-sm">
+      <span className="relative inline-flex items-center justify-center size-lg rounded-full text-band-ink text-xs font-bold" style={{ background: row.color }}>
         {row.name[0]}
-        <span className="presence-dot" />
+        <span className="absolute -right-[2px] -bottom-[2px] size-xs border-2 border-paper rounded-full bg-accent" />
       </span>
-      <span className="whos-here-text">
-        <span className="whos-here-name">
+      <span className="grid min-w-0">
+        <span className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">
           {row.name}
           {row.you ? " (you)" : ""}
         </span>
         {row.activity !== null && (
-          <span className="whos-here-activity">{row.activity}</span>
+          <span className="text-sm text-muted whitespace-nowrap">{row.activity}</span>
         )}
       </span>
     </li>
@@ -6485,12 +7025,12 @@ function PresenceChip({
   you?: boolean;
 }) {
   return (
-    <span className="presence-user">
-      <span className="presence-avatar" style={{ background: person.color }}>
+    <span className="flex items-center gap-2xs">
+      <span className="relative inline-flex items-center justify-center size-lg rounded-full text-band-ink text-xs font-bold" style={{ background: person.color }}>
         {person.name[0]}
-        <span className="presence-dot" />
+        <span className="absolute -right-[2px] -bottom-[2px] size-xs border-2 border-paper rounded-full bg-accent" />
       </span>
-      <span className="presence-name">
+      <span className="hidden">
         {person.name}
         {you ? " (you)" : ""}
       </span>

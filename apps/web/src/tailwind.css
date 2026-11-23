@@ -1,0 +1,213 @@
+/* Tailwind CSS v4 entry point.
+ *
+ * Preflight is deliberately NOT imported: the app carries its
+ * own reset in the @layer base block below (folded in from
+ * the old base.css in Phase 7 of the migration), and Tailwind's
+ * preflight would change how elements render (list styles,
+ * button backgrounds, link underlines, heading sizes). A
+ * Phase 7 trial confirmed it is not a no-op here: it restyles
+ * placeholder text and changes the default border colour, so
+ * it stays off. Only the theme and utilities layers load.
+ *
+ * Layer order: theme < base < components < utilities. The
+ * design tokens (tokens.css) sit in the theme layer, the base
+ * styles below them, and Tailwind utilities on top. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "./tokens.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* The app's design tokens (tokens.css), mapped into Tailwind's
+ * theme as inline references. "Inline" means Tailwind does not
+ * emit these variables itself — utilities reference the
+ * existing CSS variables directly, so bg-paper, text-ink,
+ * border-rule and friends follow whichever data-theme
+ * (dark / light / dose) is active on <html>. */
+@theme inline {
+  /* Colours */
+  --color-paper: var(--color-paper);
+  --color-paper-2: var(--color-paper-2);
+  --color-paper-3: var(--color-paper-3);
+  --color-ink: var(--color-ink);
+  --color-ink-2: var(--color-ink-2);
+  --color-muted: var(--color-muted);
+  --color-rule: var(--color-rule);
+  --color-accent: var(--color-accent);
+  --color-accent-deep: var(--color-accent-deep);
+  --color-accent-soft: var(--color-accent-soft);
+  --color-accent-ink: var(--color-accent-ink);
+  --color-focus: var(--color-focus);
+  --color-on-note: var(--color-on-note);
+  --color-band: var(--color-band);
+  --color-band-ink: var(--color-band-ink);
+  --color-band-border: var(--band-border);
+  --color-error: var(--color-error);
+  --color-error-soft: var(--color-error-soft);
+  --color-error-light: var(--color-error-light);
+  --color-success: var(--color-success);
+  --color-light: var(--light);
+  --color-glint: var(--glint);
+  --color-p-mon: var(--p-mon);
+  --color-p-tue: var(--p-tue);
+  --color-p-wed: var(--p-wed);
+  --color-p-thu: var(--p-thu);
+  --color-p-fri: var(--p-fri);
+  --color-p-sat: var(--p-sat);
+  --color-p-sun: var(--p-sun);
+
+  /* Spacing scale (p-xs, gap-md, size-lg, …) */
+  --spacing-3xs: var(--space-3xs);
+  --spacing-2xs: var(--space-2xs);
+  --spacing-xs: var(--space-xs);
+  --spacing-sm: var(--space-sm);
+  --spacing-md: var(--space-md);
+  --spacing-lg: var(--space-lg);
+  --spacing-xl: var(--space-xl);
+  --spacing-2xl: var(--space-2xl);
+  --spacing-3xl: var(--space-3xl);
+  --spacing-4xl: var(--space-4xl);
+
+  /* Type scale. Line-heights match the app's body line-height
+   * (1.55), which is what these sizes inherit today — the
+   * base styles set font-size only. Headings override with
+   * leading-* utilities where the base layer sets 1.05 / 1.2. */
+  --text-xs: var(--text-xs);
+  --text-xs--line-height: 1.55;
+  --text-sm: var(--text-sm);
+  --text-sm--line-height: 1.55;
+  --text-md: var(--text-md);
+  --text-md--line-height: 1.55;
+  --text-lg: var(--text-lg);
+  --text-lg--line-height: 1.55;
+  --text-xl: var(--text-xl);
+  --text-xl--line-height: 1.55;
+  --text-2xl: var(--text-2xl);
+  --text-2xl--line-height: 1.55;
+  --text-3xl: var(--text-3xl);
+  --text-3xl--line-height: 1.55;
+
+  /* Fonts */
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-outlier: var(--font-outlier);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-outlier);
+
+  /* Radii, shadows, tracking, easing */
+  --radius-card: var(--radius-card);
+  --radius-input: var(--radius-input);
+  --radius-pill: var(--radius-pill);
+  --shadow-card: var(--shadow-card);
+  --shadow-lift: var(--shadow-lift);
+  --tracking-display: var(--tracking-display);
+  --ease-out: var(--ease-out);
+  --ease-in: var(--ease-in);
+  --ease-in-out: var(--ease-in-out);
+
+  /* Animations (Phase 5; the keyframes are defined below) */
+  --animate-board-notice-in: board-notice-in var(--dur-short) var(--ease-out);
+  --animate-voice-rec-pulse: voice-rec-pulse 1s ease-in-out infinite;
+
+  /* The phone breakpoint. The legacy CSS switches layout at
+   * max-width: 48rem (768px); Tailwind's max-* variants use
+   * "width < breakpoint", so 48.0625rem (769px) makes
+   * max-phone: mean exactly width <= 768px. */
+  --breakpoint-phone: 48.0625rem;
+}
+
+/* Base styles, folded in from the old base.css in Phase 7.
+ * The element rules below are that file's reset and defaults,
+ * unchanged; the class helpers it carried (.lead, .container,
+ * .num, .figure) became @utility definitions further down,
+ * and .visually-hidden is now Tailwind's built-in sr-only. */
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { overflow-x: clip; }
+  html { scrollbar-color: var(--color-muted) var(--color-paper); scroll-padding-top: var(--space-3xl); }
+  body { margin: 0; background: var(--color-paper); color: var(--color-ink); font-family: var(--font-body); font-size: var(--text-md); line-height: 1.55; -webkit-font-smoothing: antialiased; caret-color: var(--color-accent); }
+  ::selection { background: color-mix(in oklab, var(--color-accent) 22%, transparent); color: var(--color-ink); }
+  :focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+  a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.16em; }
+  h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: var(--display-weight, 700); font-synthesis: none; letter-spacing: var(--tracking-display); line-height: 1.05; overflow-wrap: break-word; min-width: 0; text-wrap: balance; }
+  h1 { max-width: 20ch; font-size: var(--text-display); } h2 { max-width: 30ch; font-size: var(--text-section); } h3 { max-width: 40ch; font-size: var(--text-title); line-height: 1.2; }
+  p { margin: 0; text-wrap: pretty; }
+  p:not([class]) { max-width: 65ch; }
+  img, video { max-width: 100%; height: auto; display: block; }
+  svg { display: block; }
+  [hidden] { display: none !important; }
+  button, input, select, textarea { font: inherit; }
+  [data-slot] { position: relative; overflow: hidden; background: linear-gradient(160deg, var(--color-paper-2, var(--color-paper)), var(--color-paper-3, var(--color-paper))); }
+  [data-slot] > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+  [data-slot]:has(> img) > :not(img):not([data-keep]) { display: none !important; }
+  /* photographs: natural sat=-15 con=-6 */
+  [data-slot] > img { filter: saturate(0.85) contrast(0.94); }
+  @media (max-width: 60rem) { :root { --gutter: 24px; --section-gap-s: 80px; --section-gap: 96px; --section-gap-l: 120px; } }
+  @media (max-width: 40rem) { :root { --gutter: 16px; --section-gap-s: 56px; --section-gap: 72px; --section-gap-l: 96px; --gap-columns: 16px; } }
+  @media (prefers-reduced-motion: reduce) { *:not(.keep-motion), *:not(.keep-motion)::before, *:not(.keep-motion)::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; } }
+}
+
+/* The class helpers the old base.css carried, as utilities.
+ * None of them is used by the app today; they are kept so the
+ * design system's vocabulary survives the migration. Tailwind
+ * only emits a custom utility when it is used, so they cost
+ * nothing until then. "container" is renamed page-container
+ * because Tailwind has a built-in utility of that name. */
+@utility lead {
+  font-size: var(--text-lead);
+  line-height: 1.45;
+  max-width: 52ch;
+}
+
+@utility page-container {
+  width: 100%;
+  max-width: var(--container);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+  box-sizing: border-box;
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+@utility figure {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Keyframes for the two board animations (Phase 5). They live
+ * here, next to the --animate-* mappings above, now that the
+ * rules that used them are Tailwind utilities in App.tsx. */
+
+/* Board notices slide down a touch as they appear, so the eye
+ * catches the new line under the header. */
+@keyframes board-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* The recording dot on a voice note pin pulses while recording. */
+@keyframes voice-rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* The board ground (Phase 5): warm paper with a faint fibre
+ * grain (the Dose ground), swapped for a quiet dot grid in
+ * the rule colour in the Dark and Light themes. A custom
+ * utility because the grain is an inline SVG image and the
+ * grid is theme-conditional — neither fits a stock utility. */
+@utility board-ground {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.04 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  [data-theme="dark"] &,
+  [data-theme="light"] & {
+    background-image: radial-gradient(circle, var(--color-rule) 1px, transparent 1.5px);
+    background-size: 24px 24px;
+  }
+}
