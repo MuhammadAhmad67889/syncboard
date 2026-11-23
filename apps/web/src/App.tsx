@@ -790,8 +790,12 @@ const frameClass = "absolute bg-paper rounded-input cursor-grab touch-none activ
 
 // The frame title: an input that reads as a label, in the mono
 // face. It only looks like a field while the user is typing.
+// The text uses the on-note colour, not the theme ink: the
+// pill's background is always a pastel note colour (inline),
+// so the dark on-note text stays readable in every theme —
+// the Dark theme's near-white ink would vanish on the pastel.
 const frameTitleClass =
-  "absolute px-xs py-2xs border-0 rounded-pill outline-0 text-ink font-outlier text-sm font-medium whitespace-nowrap focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-focus focus-visible:outline-offset-1";
+  "absolute px-xs py-2xs border-0 rounded-pill outline-0 text-on-note font-outlier text-sm font-medium whitespace-nowrap focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-focus focus-visible:outline-offset-1";
 
 // One overlay SVG for every connector, between the frames and
 // the items. It never blocks clicks on empty board — only the
