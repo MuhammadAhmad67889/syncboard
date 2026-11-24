@@ -378,7 +378,7 @@ const headerButtonClass = `${paperKeyClass} ${paperKeyIdleClass} justify-center 
 // Share is the header's one primary action: the filled accent
 // key instead of a paper key.
 const headerPrimaryButtonClass =
-  "inline-flex items-center justify-center gap-xs min-h-[34px] px-sm py-2xs border border-accent rounded-input bg-accent text-accent-ink text-sm font-semibold whitespace-nowrap cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-accent-deep active:translate-y-px disabled:bg-paper-3 disabled:text-muted disabled:cursor-not-allowed disabled:opacity-55 [&_svg]:flex-none max-phone:min-h-11 max-phone:px-xs max-phone:text-xs";
+  "inline-flex items-center justify-center gap-xs min-h-[34px] px-sm py-2xs border border-accent rounded-input bg-accent-solid text-accent-ink text-sm font-semibold whitespace-nowrap cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-accent-deep active:translate-y-px disabled:bg-paper-3 disabled:text-muted disabled:cursor-not-allowed disabled:opacity-55 [&_svg]:flex-none max-phone:min-h-11 max-phone:px-xs max-phone:text-xs";
 
 // The connection status pill's colours per state. The word
 // itself carries the meaning, never colour alone.
@@ -440,7 +440,7 @@ const railButtonSizeClass =
 const railButtonClass = `${paperKeyClass} ${paperKeyIdleClass} ${railButtonSizeClass}`;
 
 // The active tool is the filled accent key, not a paper key.
-const railButtonActiveClass = `${paperKeyClass} border-accent bg-accent text-accent-ink hover:bg-accent disabled:bg-accent disabled:text-accent-ink ${railButtonSizeClass}`;
+const railButtonActiveClass = `${paperKeyClass} border-accent bg-accent-solid text-accent-ink hover:bg-accent-solid disabled:bg-accent-solid disabled:text-accent-ink ${railButtonSizeClass}`;
 
 // In the rail the tool and font-size groups run down, not
 // across; on a phone they join the toolbar row.
@@ -554,7 +554,7 @@ const boardListClass = "flex flex-col gap-xs m-0 p-0 list-none";
 const boardTabClass =
   "flex items-center w-full border border-rule rounded-pill bg-paper overflow-hidden";
 const boardTabActiveClass =
-  "flex items-center w-full border border-accent rounded-pill bg-accent overflow-hidden";
+  "flex items-center w-full border border-accent rounded-pill bg-accent-solid overflow-hidden";
 
 const boardTabButtonClass =
   "flex-1 min-w-0 min-h-9 px-sm py-xs border-0 bg-transparent text-ink font-semibold whitespace-nowrap overflow-hidden text-ellipsis text-left cursor-pointer max-phone:min-h-11";
@@ -677,7 +677,7 @@ const snapshotCountsClass = "m-0 text-sm text-muted leading-[1.4]";
 // pin is a dashed paper key instead — it is not a thread yet,
 // and it never blocks a click on the board.
 const commentPinClass =
-  "absolute z-[6] flex items-center justify-center size-7 p-0 border-2 border-paper rounded-full bg-accent text-accent-ink cursor-pointer -translate-x-1/2 -translate-y-full";
+  "absolute z-[6] flex items-center justify-center size-7 p-0 border-2 border-paper rounded-full bg-accent-solid text-accent-ink cursor-pointer -translate-x-1/2 -translate-y-full";
 
 const commentPinSelectedClass = `${commentPinClass} shadow-[0_0_0_2px_var(--color-focus)]`;
 
@@ -710,7 +710,7 @@ const boardNoticeButtonClass =
 // corner like a badge. It never takes clicks, so voting on a
 // badged item still works.
 const voteBadgeClass =
-  "absolute -top-[10px] -right-[10px] z-[5] flex items-center justify-center min-w-[22px] h-[22px] px-2xs border-2 border-paper rounded-pill bg-accent text-accent-ink text-xs font-bold tabular-nums pointer-events-none shadow-card";
+  "absolute -top-[10px] -right-[10px] z-[5] flex items-center justify-center min-w-[22px] h-[22px] px-2xs border-2 border-paper rounded-pill bg-accent-solid text-accent-ink text-xs font-bold tabular-nums pointer-events-none shadow-card";
 
 // The row under the header: panels, rail, and board. On a
 // phone it stacks — canvas on top, tools along the bottom.
@@ -774,7 +774,7 @@ const voiceNoteClass = `${voiceNoteBaseClass} border-rule`;
 const voiceNoteRecordingClass = `${voiceNoteBaseClass} border-error`;
 
 const voicePlayClass =
-  "flex items-center justify-center w-8 h-8 p-0 border-0 rounded-full bg-accent text-accent-ink text-[13px] leading-none cursor-pointer";
+  "flex items-center justify-center w-8 h-8 p-0 border-0 rounded-full bg-accent-solid text-accent-ink text-[13px] leading-none cursor-pointer";
 
 const voiceDurationClass = "font-outlier text-sm text-muted leading-none";
 
@@ -782,7 +782,7 @@ const voiceRecDotClass =
   "w-3 h-3 rounded-full bg-error animate-voice-rec-pulse motion-reduce:animate-none";
 
 const voiceStopClass =
-  "px-sm py-2xs border-0 rounded-input bg-accent text-accent-ink text-sm font-semibold cursor-pointer";
+  "px-sm py-2xs border-0 rounded-input bg-accent-solid text-accent-ink text-sm font-semibold cursor-pointer";
 
 // A named section on the board. The fill stays paper — the
 // frame's colour shows in its border (inline) and title pill.
@@ -1179,7 +1179,7 @@ export default function App() {
           <p className="min-h-[1lh] text-error text-sm font-semibold" role="alert">
             {authError ?? ""}
           </p>
-          <button type="submit" className="min-h-11 px-md py-xs border-0 rounded-input bg-accent text-accent-ink font-semibold cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-accent-deep active:translate-y-px disabled:bg-accent-deep disabled:text-accent-soft disabled:cursor-not-allowed disabled:opacity-55" disabled={authBusy}>
+          <button type="submit" className="min-h-11 px-md py-xs border-0 rounded-input bg-accent-solid text-accent-ink font-semibold cursor-pointer [transition:background-color_var(--dur-short)_var(--ease-out),transform_var(--dur-micro)_var(--ease-out)] hover:bg-accent-deep active:translate-y-px disabled:bg-accent-deep disabled:text-accent-soft disabled:cursor-not-allowed disabled:opacity-55" disabled={authBusy}>
             {mode === "login" ? "Log in" : "Create account"}
           </button>
         </form>
