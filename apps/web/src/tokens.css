@@ -11,6 +11,10 @@
   --color-ink: oklch(21% 0.025 170); --color-ink-2: oklch(31% 0.02 170); --color-muted: oklch(49% 0.024 165);
   --color-rule: oklch(86.5% 0.022 140);
   --color-accent: oklch(50% 0.13 160); --color-accent-deep: oklch(42% 0.11 162); --color-accent-soft: oklch(88% 0.08 160); --color-accent-ink: oklch(99% 0.006 160);
+  /* Filled accent surfaces (buttons, pins, badges) use the solid clay,
+   * dark enough for light text on top to pass 4.5:1. The plain accent
+   * stays for text and borders on paper, where it already passes. */
+  --color-accent-solid: var(--color-accent);
   --color-focus: oklch(45% 0.14 160);
   --color-on-note: oklch(21% 0.025 170);
   --color-band: oklch(21% 0.025 170); --color-band-ink: oklch(97.6% 0.011 88); --band-border: transparent;
@@ -39,6 +43,7 @@
   --color-ink: #f5f0eb; --color-ink-2: #d8d1c9; --color-muted: #a39e96;
   --color-rule: #3b3835;
   --color-accent: #d97757; --color-accent-deep: #c05f3c; --color-accent-soft: #3d2c24; --color-accent-ink: #fff7f2;
+  --color-accent-solid: #ad5236;
   --color-focus: #e08a6d;
   --color-on-note: #292524;
   --color-band: #262624; --color-band-ink: #f5f0eb; --band-border: #3b3835;
@@ -58,6 +63,7 @@
   --color-ink: #292524; --color-ink-2: #44403c; --color-muted: #78716c;
   --color-rule: #e3ded2;
   --color-accent: #d97757; --color-accent-deep: #b85c3e; --color-accent-soft: #f7e3d9; --color-accent-ink: #fffaf5;
+  --color-accent-solid: #ad5236;
   --color-focus: #c05f3c;
   --color-on-note: #292524;
   --color-band: #292524; --color-band-ink: #faf9f5; --band-border: #292524;
