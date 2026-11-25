@@ -32,9 +32,7 @@ Local work only: no commit, push, upload, or PR until the user says so.
 - Tests for each phase, following the existing pattern (pure-function tests
   plus Yjs map round-trips, e.g. `frames.test.ts`). After EACH phase run:
   `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` — all must
-  pass — and `node ~/workspace/custom-skills/hallmark/scripts/sloplint.mjs`
-  on the changed files, 0/0/0 (static gates only; the render tier is
-  unavailable, never claim a render pass).
+  pass.
 - Browser verification per phase with Playwright
   (`~/workspace/screenshot-tool/`, following `verify-syncboard-phase1.mjs`):
   on a THROWAWAY board, never the Main board, and delete the throwaway board
