@@ -10,14 +10,10 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
-
 export default tseslint.config(
   {
-    // Built output and dependencies are never linted. Neither is
-    // .hallmark: design notes and Figma prototype scripts, which
-    // run inside Figma (where `figma` is a global), not in this
-    // repo's toolchain.
-    ignores: ["**/dist/**", "**/node_modules/**", ".hallmark/**"],
+    // Built output and dependencies are never linted.
+    ignores: ["**/dist/**", "**/node_modules/**"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
